@@ -29,3 +29,4 @@ serviceAccountKey.json  # Nunca versionar chaves de API!
 
 # Outros
 .DS_Store  # Mac
+serviceAccountKey.json
