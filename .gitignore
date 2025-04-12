@@ -1,0 +1,31 @@
+# Pastas do PyInstaller
+build/
+dist/
+*.spec
+
+# Arquivos gerados pelo Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambiente virtual
+venv/
+env/
+.venv/
+
+# Configurações do IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs e arquivos temporários
+*.log
+*.tmp
+*.bak
+
+# Firebase (se houver)
+serviceAccountKey.json  # Nunca versionar chaves de API!
+
+# Outros
+.DS_Store  # Mac
