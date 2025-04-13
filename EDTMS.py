@@ -12,6 +12,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from pathlib import Path
 
+#  pyinstaller --onefile --windowed --icon=meu_icone.ico EDTMS.py
+
 # Caminho padrão do log
 LOG_DIR = Path(os.environ["USERPROFILE"]) / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
