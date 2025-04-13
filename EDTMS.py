@@ -3,8 +3,10 @@ import sys
 import json
 import time
 import threading
+import webbrowser
 import unicodedata
 import tkinter as tk
+from PIL import Image, ImageTk 
 from tkinter import messagebox, scrolledtext
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -209,13 +211,151 @@ def loop_verificacao():
 def iniciar_loop():
     threading.Thread(target=loop_verificacao, daemon=True).start()
 
-# Interface Gráfica Tkinter
+# Interface Gráfica Tkinter - Design Atualizado
 janela = tk.Tk()
-janela.title("Elite Dangerous - Firestore Sync")
-janela.geometry("600x400")
+janela.title("")
+janela.geometry("500x400")  # Altura um pouco maior
+janela.configure(bg="#1a1a1a")
+janela.overrideredirect(True)
 
-log_text = scrolledtext.ScrolledText(janela, wrap=tk.WORD, width=70, height=20)
-log_text.pack(padx=10, pady=10)
+# Cores e Fontes
+COR_DE_FUNDO = "#1a1a1a"
+COR_TEXTO = "#cccccc"
+COR_DESTAQUE = "#ff9900"
+FONTE_TITULO = ("Arial", 12, "bold")
+FONTE_TEXTO = ("Arial", 9)
+
+# Frame Principal
+frame_principal = tk.Frame(janela, bg=COR_DE_FUNDO)
+frame_principal.pack(fill="both", expand=True, padx=20, pady=15)
+
+# --- Área do Cabeçalho (Arrastável) ---
+header_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
+header_frame.pack(side="top", fill="x", pady=(0, 15))
+
+# Título Centralizado
+cabecalho = tk.Label(
+    header_frame,
+    text="ELITE DANGEROUS CONSTRUCTION SYNC",
+    font=FONTE_TITULO,
+    fg=COR_DESTAQUE,
+    bg=COR_DE_FUNDO
+)
+cabecalho.pack(side="top", pady=(0, 5))
+
+def abrir_site(event):
+    webbrowser.open("https://edtms.squareweb.app")
+    status_bar.config(text="Redirecionando para o site EDTMS...")
+
+try:
+    logo_img = Image.open("edtms_logo.png")
+    logo_img = logo_img.resize((200, 60), Image.LANCZOS)
+    logo_tk = ImageTk.PhotoImage(logo_img)
+    
+    # Cria um frame para o efeito de hover
+    logo_frame = tk.Frame(
+        header_frame,
+        bg=COR_DE_FUNDO,
+        highlightbackground=COR_DE_FUNDO,
+        highlightthickness=2
+    )
+    logo_frame.pack(pady=5)
+    
+    logo_label = tk.Label(
+        logo_frame,
+        image=logo_tk,
+        bg=COR_DE_FUNDO,
+        cursor="hand2"
+    )
+    logo_label.image = logo_tk
+    logo_label.pack()
+    
+    # Efeitos Interativos
+    def hover_enter(e):
+        logo_frame.config(highlightbackground=COR_DESTAQUE)
+        logo_label.config(bg="#252525")
+        
+    def hover_leave(e):
+        logo_frame.config(highlightbackground=COR_DE_FUNDO)
+        logo_label.config(bg=COR_DE_FUNDO)
+    
+    # Bind dos eventos
+    logo_label.bind("<Enter>", hover_enter)
+    logo_label.bind("<Leave>", hover_leave)
+    logo_label.bind("<Button-1>", abrir_site)
+    
+except Exception as e:
+    print(f"Erro ao carregar logo: {str(e)}")
+
+# --- Botão Fechar ---
+btn_fechar = tk.Label(
+    janela,
+    text="✕",
+    font=("Arial", 14),
+    fg=COR_TEXTO,
+    bg=COR_DE_FUNDO,
+    cursor="hand2"
+)
+btn_fechar.place(x=465, y=5)  # Posição ajustada
+btn_fechar.bind("<Button-1>", lambda e: janela.destroy())
+
+# --- Área de Log Estilizada ---
+log_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
+log_frame.pack(fill="both", expand=True)
+
+log_text = scrolledtext.ScrolledText(
+    log_frame,
+    wrap=tk.WORD,
+    width=60,
+    height=12,
+    bg="#2a2a2a",
+    fg=COR_TEXTO,
+    insertbackground=COR_DESTAQUE,
+    selectbackground=COR_DESTAQUE,
+    font=FONTE_TEXTO,
+    relief="flat",
+    highlightthickness=0
+)
+log_text.pack(fill="both", expand=True)
+
+# Personalização da Scrollbar
+log_text.vbar.config(
+    troughcolor="#2a2a2a",
+    bg="#404040",
+    activebackground=COR_DESTAQUE
+)
+
+# --- Barra de Status Premium ---
+status_bar = tk.Label(
+    janela,
+    text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.0",
+    bg=COR_DESTAQUE,
+    fg="#1a1a1a",
+    font=("Consolas", 9, "bold"),
+    height=2,
+    anchor="center",
+    padx=10
+)
+status_bar.pack(side="bottom", fill="x")
+
+# --- Sistema de Arraste ---
+def start_drag(event):
+    janela._offset_x = event.x
+    janela._offset_y = event.y
+
+def do_drag(event):
+    x = janela.winfo_pointerx() - janela._offset_x
+    y = janela.winfo_pointery() - janela._offset_y
+    janela.geometry(f"+{x}+{y}")
+
+# Permite arrastar por qualquer parte do cabeçalho
+header_frame.bind("<Button-1>", start_drag)
+header_frame.bind("<B1-Motion>", do_drag)
+
+# Mensagem Inicial
+log_text.tag_config("success", foreground="#00ff00")
+log_text.insert(tk.END, "[🛰️ SISTEMA] ", "success")
+log_text.insert(tk.END, "Conectado aos servidores da Federação!\n")
 
 iniciar_loop()
 janela.mainloop()
