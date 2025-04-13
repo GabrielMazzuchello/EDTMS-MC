@@ -12,7 +12,9 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from pathlib import Path
 
-#  pyinstaller --onefile --windowed --icon=meu_icone.ico EDTMS.py
+#  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
+
+# pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
 
 # Caminho padrão do log
 LOG_DIR = Path(os.environ["USERPROFILE"]) / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
@@ -245,12 +247,18 @@ cabecalho = tk.Label(
 )
 cabecalho.pack(side="top", pady=(0, 5))
 
+def get_resource_path(relative_path):
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
 def abrir_site(event):
     webbrowser.open("https://edtms.squareweb.app")
     status_bar.config(text="Redirecionando para o site EDTMS...")
 
 try:
-    logo_img = Image.open("edtms_logo.png")
+    logo_path = get_resource_path("edtms_logo.png")
+    logo_img = Image.open(logo_path)
     logo_img = logo_img.resize((200, 60), Image.LANCZOS)
     logo_tk = ImageTk.PhotoImage(logo_img)
     
