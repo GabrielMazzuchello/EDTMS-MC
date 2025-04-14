@@ -22,6 +22,9 @@ ultima_morte_processada = None
 ultima_undocked_processada = None
 ultima_posicao_log = 0
 ultima_sessao_jogo = None
+leitura_carga_permitida = False
+
+
 
 
 #  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
@@ -190,8 +193,6 @@ def atualizar_firestore(nome_estacao, materiais_script):
 
 
 def loop_verificacao():
-    threading.Thread(target=processar_carga, daemon=True).start()
-
     ultimo_dock_log = "dock_status.txt"
     ultima_estacao = ""
     ultimo_estado_materiais = {}
@@ -202,12 +203,14 @@ def loop_verificacao():
             time.sleep(5)
             continue
 
+        threading.Thread(target=processar_carga, daemon=True).start()
         nome_estacao, tipo_estacao, materiais = processar_log(log_path)
 
         if nome_estacao:
             if nome_estacao != ultima_estacao:
                 ultima_estacao = nome_estacao
                 ultimo_estado_materiais = {}  # Zera o estado quando troca de estação
+                leitura_carga_permitida = False
 
                 with open(ultimo_dock_log, "w", encoding="utf-8") as f:
                     f.write(f"Docked em {nome_estacao} ({tipo_estacao})\n")
@@ -243,11 +246,32 @@ ultima_morte_detectada = None
 ultima_resurreicao_processada = None
 
 def processar_carga():
-    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada
-    global ultima_morte_detectada, ultima_resurreicao_processada
+    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada, ultima_morte_detectada
+    global ultima_morte_processada, ultima_resurreicao_processada, leitura_carga_permitida
 
     cargo_path = LOG_DIR / "Cargo.json"
     log_path = obter_log_mais_recente()
+
+    # Verifica se há um evento "Undocked" nos últimos 30 segundos
+    if log_path and log_path.exists():
+        with open(log_path, encoding="utf-8") as f:
+            linhas = f.readlines()
+        undocked_events = [json.loads(linha) for linha in linhas if 'Undocked' in linha]
+        if undocked_events:
+            undocked_event = sorted(undocked_events, key=lambda e: e["timestamp"], reverse=True)[0]
+            ts_undocked = datetime.strptime(undocked_event["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+            if datetime.utcnow() - ts_undocked <= timedelta(seconds=30):
+                leitura_carga_permitida = True
+            else:
+                leitura_carga_permitida = False
+        else:
+            leitura_carga_permitida = False
+    else:
+        leitura_carga_permitida = False
+
+    # Se não houve Undocked recente, não processa a carga
+    if not leitura_carga_permitida:
+        return
 
     while True:
         try:
@@ -255,23 +279,37 @@ def processar_carga():
             if log_path and log_path.exists():
                 with open(log_path, encoding="utf-8") as f:
                     linhas = f.readlines()
-                    eventos = [json.loads(linha) for linha in linhas if '"event":"Died"' in linha or '"event":"Resurrect"' in linha]
+                    eventos = [json.loads(linha) for linha in linhas 
+                            if '"event":"Died"' in linha or '"event":"Resurrect"' in linha]
 
+                # Filtra apenas eventos dos últimos 30 segundos
+                agora = datetime.utcnow()
+                eventos_recentes = []
                 for evento in eventos:
                     ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+                    if (agora - ts).total_seconds() <= 30:
+                        eventos_recentes.append(evento)
 
-                    if evento.get("event") == "Died":
+                # Ordena do mais recente para o mais antigo
+                eventos_recentes.sort(key=lambda e: e["timestamp"], reverse=True)
+
+                # Processa apenas o par mais recente de morte/resurreição
+                morte_processada = False
+                for evento in eventos_recentes:
+                    ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+                    
+                    if not morte_processada and evento.get("event") == "Died":
+                        # Atualiza apenas se for a morte mais recente
                         if not ultima_morte_detectada or ts > ultima_morte_detectada:
                             ultima_morte_detectada = ts
-
-                    elif evento.get("event") == "Resurrect":
-                        if (
-                            ultima_morte_detectada
-                            and (not ultima_resurreicao_processada or ts > ultima_resurreicao_processada)
-                            and ts - ultima_morte_detectada <= timedelta(seconds=60)
-                        ):
-                            log_text.insert(tk.END, f"[💀] Morte confirmada por Resurrect. Revertendo entrega...\n")
-                            ultima_resurreicao_processada = ts
+                            morte_processada = True
+                    
+                    elif evento.get("event") == "Resurrect" and ultima_morte_detectada:
+                        # Verifica se a ressurreição é posterior à morte e dentro da janela
+                        if ts > ultima_morte_detectada and (ts - ultima_morte_detectada).total_seconds() <= 30:
+                            # Processa a reversão apenas uma vez
+                            if not ultima_resurreicao_processada or ts > ultima_resurreicao_processada:
+                                ultima_resurreicao_processada = ts
 
                             if ultima_entrega_realizada and ultimo_cargo:
                                 construcao_nome = construcoes_var.get()
