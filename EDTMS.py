@@ -24,9 +24,6 @@ ultima_posicao_log = 0
 ultima_sessao_jogo = None
 leitura_carga_permitida = False
 
-
-
-
 #  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
 
 # pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
@@ -523,10 +520,12 @@ def obter_materiais_da_construcao(nome_construcao):
 def iniciar_loop():
     threading.Thread(target=loop_verificacao, daemon=True).start()
 
+
+
 # Interface Gráfica Tkinter - Design Atualizado
 janela = tk.Tk()
 janela.title("")
-janela.geometry("1000x500")  # Altura um pouco maior
+janela.geometry("500x400")
 janela.configure(bg="#1a1a1a")
 janela.overrideredirect(True)
 
@@ -537,33 +536,54 @@ COR_DESTAQUE = "#ff9900"
 FONTE_TITULO = ("Arial", 12, "bold")
 FONTE_TEXTO = ("Arial", 9)
 
+# Estilo ttk para bordas arredondadas nos botões
+style = ttk.Style()
+style.theme_use("default")
+style.configure("Rounded.TButton", padding=6, relief="flat", background=COR_DESTAQUE, foreground="#1a1a1a", font=("Arial", 9, "bold"))
+style.map("Rounded.TButton",
+    background=[("active", "#ffaa33")],
+    foreground=[("disabled", "#888888")]
+)
+
 # Frame Principal
 frame_principal = tk.Frame(janela, bg=COR_DE_FUNDO)
-frame_principal.pack(fill="both", expand=True, padx=20, pady=15)
-auth_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
-auth_frame.pack(fill="x", pady=(0, 10))
+frame_principal.pack(fill="both", expand=True, padx=10, pady=10)
 
-# Campo UID
-tk.Label(auth_frame, text="Seu UID:", bg=COR_DE_FUNDO, fg=COR_TEXTO).pack(side="left", padx=(0, 5))
-uid_entry = tk.Entry(auth_frame, bg="#2a2a2a", fg=COR_TEXTO, width=30)
-uid_entry.pack(side="left", fill="x", expand=True)
+# Top Frame (UID, Construção e Botões)
+top_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
+top_frame.pack(fill="x", pady=(0, 5))
 
-# Botão de carregar construções
-load_btn = tk.Button(auth_frame, text="Carregar Construções", command=lambda: carregar_construcoes(),
-                    bg=COR_DESTAQUE, fg="#1a1a1a", relief="flat")
-load_btn.pack(side="left", padx=(10, 0))
+tk.Label(top_frame, text="UID:", bg=COR_DE_FUNDO, fg=COR_TEXTO).grid(row=0, column=0, sticky="w", padx=5)
+uid_entry = tk.Entry(top_frame, bg="#2a2a2a", fg=COR_TEXTO, width=25)
+uid_entry.grid(row=0, column=1, sticky="ew", padx=5)
 
-# Dropdown de construções
-tk.Label(auth_frame, text="Construção:", bg=COR_DE_FUNDO, fg=COR_TEXTO).pack(side="left", padx=(10, 5))
+load_btn = ttk.Button(top_frame, text="Carregar", style="Rounded.TButton", command=carregar_construcoes)
+load_btn.grid(row=0, column=2, padx=(5, 0))
+
+# Botão Fechar ao lado do "Carregar"
+btn_fechar = tk.Label(
+    top_frame,
+    text="✕",
+    font=("Arial", 12),
+    fg=COR_TEXTO,
+    bg=COR_DE_FUNDO,
+    cursor="hand2"
+)
+btn_fechar.grid(row=0, column=3, padx=(10, 5))
+btn_fechar.bind("<Button-1>", lambda e: janela.destroy())
+
+# Dropdown de Construções
+tk.Label(top_frame, text="Construção:", bg=COR_DE_FUNDO, fg=COR_TEXTO).grid(row=1, column=0, sticky="w", padx=5, pady=(5, 0))
 construcoes_var = tk.StringVar()
-construcoes_dropdown = ttk.Combobox(auth_frame, textvariable=construcoes_var, state="readonly", background="#2a2a2a", foreground=COR_TEXTO)
-construcoes_dropdown.pack(side="left", fill="x", expand=True)
+construcoes_dropdown = ttk.Combobox(top_frame, textvariable=construcoes_var, state="readonly", width=32)
+construcoes_dropdown.grid(row=1, column=1, columnspan=3, sticky="ew", padx=5, pady=(5, 0))
 
-# --- Área do Cabeçalho (Arrastável) ---
+top_frame.grid_columnconfigure(1, weight=1)
+
+# Cabeçalho
 header_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
-header_frame.pack(side="top", fill="x", pady=(0, 15))
+header_frame.pack(side="top", fill="x", pady=(0, 10))
 
-# Título Centralizado
 cabecalho = tk.Label(
     header_frame,
     text="ELITE DANGEROUS CONSTRUCTION SYNC",
@@ -587,55 +607,30 @@ try:
     logo_img = Image.open(logo_path)
     logo_img = logo_img.resize((200, 60), Image.LANCZOS)
     logo_tk = ImageTk.PhotoImage(logo_img)
-    
-    # Cria um frame para o efeito de hover
-    logo_frame = tk.Frame(
-        header_frame,
-        bg=COR_DE_FUNDO,
-        highlightbackground=COR_DE_FUNDO,
-        highlightthickness=2
-    )
+
+    logo_frame = tk.Frame(header_frame, bg=COR_DE_FUNDO, highlightbackground=COR_DE_FUNDO, highlightthickness=2)
     logo_frame.pack(pady=5)
-    
-    logo_label = tk.Label(
-        logo_frame,
-        image=logo_tk,
-        bg=COR_DE_FUNDO,
-        cursor="hand2"
-    )
+
+    logo_label = tk.Label(logo_frame, image=logo_tk, bg=COR_DE_FUNDO, cursor="hand2")
     logo_label.image = logo_tk
     logo_label.pack()
-    
-    # Efeitos Interativos
+
     def hover_enter(e):
         logo_frame.config(highlightbackground=COR_DESTAQUE)
         logo_label.config(bg="#252525")
-        
+
     def hover_leave(e):
         logo_frame.config(highlightbackground=COR_DE_FUNDO)
         logo_label.config(bg=COR_DE_FUNDO)
-    
-    # Bind dos eventos
+
     logo_label.bind("<Enter>", hover_enter)
     logo_label.bind("<Leave>", hover_leave)
     logo_label.bind("<Button-1>", abrir_site)
-    
+
 except Exception as e:
     print(f"Erro ao carregar logo: {str(e)}")
 
-# --- Botão Fechar ---
-btn_fechar = tk.Label(
-    janela,
-    text="✕",
-    font=("Arial", 14),
-    fg=COR_TEXTO,
-    bg=COR_DE_FUNDO,
-    cursor="hand2"
-)
-btn_fechar.place(x=465, y=5)  # Posição ajustada
-btn_fechar.bind("<Button-1>", lambda e: janela.destroy())
-
-# --- Área de Log Estilizada ---
+# Área de Log
 log_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
 log_frame.pack(fill="both", expand=True)
 
@@ -643,7 +638,7 @@ log_text = scrolledtext.ScrolledText(
     log_frame,
     wrap=tk.WORD,
     width=60,
-    height=12,
+    height=10,
     bg="#2a2a2a",
     fg=COR_TEXTO,
     insertbackground=COR_DESTAQUE,
@@ -654,27 +649,26 @@ log_text = scrolledtext.ScrolledText(
 )
 log_text.pack(fill="both", expand=True)
 
-# Personalização da Scrollbar
 log_text.vbar.config(
     troughcolor="#2a2a2a",
     bg="#404040",
     activebackground=COR_DESTAQUE
 )
 
-# --- Barra de Status Premium ---
+# Barra de Status
 status_bar = tk.Label(
     janela,
     text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.0",
     bg=COR_DESTAQUE,
     fg="#1a1a1a",
-    font=("Consolas", 9, "bold"),
+    font=("Consolas", 10, "bold"),
     height=2,
     anchor="center",
     padx=10
 )
 status_bar.pack(side="bottom", fill="x")
 
-# --- Sistema de Arraste ---
+# Sistema de Arraste
 def start_drag(event):
     janela._offset_x = event.x
     janela._offset_y = event.y
@@ -684,7 +678,6 @@ def do_drag(event):
     y = janela.winfo_pointery() - janela._offset_y
     janela.geometry(f"+{x}+{y}")
 
-# Permite arrastar por qualquer parte do cabeçalho
 header_frame.bind("<Button-1>", start_drag)
 header_frame.bind("<B1-Motion>", do_drag)
 
@@ -693,5 +686,6 @@ log_text.tag_config("success", foreground="#00ff00")
 log_text.insert(tk.END, "[🛰️ SISTEMA] ", "success")
 log_text.insert(tk.END, "Conectado aos servidores da Federação!\n")
 
+# Iniciar sistema
 iniciar_loop()
 janela.mainloop()
