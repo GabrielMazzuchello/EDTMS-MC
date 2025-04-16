@@ -27,6 +27,7 @@ ultimos_abandonos = set()  # ← Agora fora da função, persistente
 verificacao_em_andamento = False
 verificacao_thread = None
 ultimo_undocked_ts = None
+processar_carga_em_execucao = False
 
 #  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
 
@@ -251,8 +252,11 @@ def verificar_abandono_ou_morte(materiais):
         time.sleep(1)
 
 def processar_carga():
-    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada, verificacao_thread
+    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada, verificacao_thread, processar_carga_em_execucao
     global ultima_morte_detectada, ultima_resurreicao_processada, verificacao_thread, ultimo_undocked_ts
+    if processar_carga_em_execucao:
+        return
+    processar_carga_em_execucao = True
 
     log_path = obter_log_mais_recente()
     if not log_path or not log_path.exists():
@@ -290,6 +294,7 @@ def processar_carga():
                 if tipo == "Docked":
                     ultima_entrega_realizada = False
                     log_text.insert(tk.END, "[INFO] Atracado. Aguardando compras...\n")
+                    eventos_processados.add(evento_id)
 
                 # 2. MARKETBUY (Compras na estação)
                 elif tipo == "MarketBuy":
@@ -304,6 +309,9 @@ def processar_carga():
                             "quantidade": qtd
                         })
                         log_text.insert(tk.END, f"[💰] Compra detectada: {nome} x{qtd}\n")
+                        subtrair_do_firestore(nome, qtd)  # 👈 subtrai diretamente após compra
+                        eventos_processados.add(evento_id)
+
 
                 # 3. UNDОCKED → iniciar verificação de morte/abandono
                 elif tipo == "Undocked":
@@ -325,16 +333,14 @@ def processar_carga():
                             verificacao_thread.start()
                             ultima_entrega_realizada = True
                             materiais_entregues.clear()
-
-
-                eventos_processados.add(evento_id)
-
+                            eventos_processados.add(evento_id)
         except Exception as e:
             log_text.insert(tk.END, f"[ERRO] {str(e)}\n")
             import traceback
             traceback.print_exc()
-
         time.sleep(1)
+
+    processar_carga_em_execucao = False
 
 def abandono_para_firebase(nome, qtd):
     construcao_nome = construcoes_var.get()
@@ -355,6 +361,28 @@ def abandono_para_firebase(nome, qtd):
             break
 
     doc_ref.update({"items": materiais})
+
+def subtrair_do_firestore(nome, qtd):
+    construcao_nome = construcoes_var.get()
+    if not construcao_nome or construcao_nome not in construcoes_cache:
+        log_text.insert(tk.END, "⚠️ Nenhuma construção válida para subtrair.\n")
+        return
+
+    doc_ref = db.collection("inventories").document(construcoes_cache[construcao_nome]["doc_id"])
+    doc = doc_ref.get()
+    if not doc.exists:
+        return
+
+    materiais = doc.to_dict().get("items", [])
+    for mat in materiais:
+        if gerar_id(mat["material"]) == gerar_id(nome):
+            novo_valor = max(0, mat["restante"] - qtd)
+            log_text.insert(tk.END, f"✎ {mat['material']}: {mat['restante']} → {novo_valor} (Comprado)\n")
+            mat["restante"] = novo_valor
+            break
+
+    doc_ref.update({"items": materiais})
+
 
 
 def loop_verificacao():
