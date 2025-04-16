@@ -23,6 +23,10 @@ ultima_undocked_processada = None
 ultima_posicao_log = 0
 ultima_sessao_jogo = None
 leitura_carga_permitida = False
+ultimos_abandonos = set()  # ← Agora fora da função, persistente
+verificacao_em_andamento = False
+verificacao_thread = None
+ultimo_undocked_ts = None
 
 #  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
 
@@ -188,6 +192,170 @@ def atualizar_firestore(nome_estacao, materiais_script):
     log_text.insert(tk.END, f"Estação '{nome_estacao}' sincronizada com {len(novos_itens)} materiais.\n")
     log_text.see(tk.END)
 
+def verificar_abandono_ou_morte(materiais):
+    global ultima_morte_detectada, ultimos_abandonos, ultimo_undocked_ts
+
+    log_path = obter_log_mais_recente()
+    if not log_path or not log_path.exists():
+        return
+
+    morte_processada = False
+
+    while True:
+        try:
+            with open(log_path, encoding="utf-8") as f:
+                linhas = f.readlines()
+            eventos = [json.loads(l) for l in linhas if l.strip().startswith('{')]
+
+            for evento in eventos:
+                tipo = evento.get("event")
+                ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+
+                # Evita eventos anteriores ao último undocked
+                if ultimo_undocked_ts and ts <= ultimo_undocked_ts:
+                    continue
+
+                # Ejeção de carga não abandonada
+                if tipo == "EjectCargo":
+                    nome = evento.get("Type_Localised") or evento.get("Type")
+                    qtd = evento.get("Count", 0)
+                    mat_id = gerar_id(nome)
+                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}"
+
+                    if evento_id not in ultimos_abandonos:
+                        ultimos_abandonos.add(evento_id)
+                        abandono_para_firebase(nome, qtd)
+
+                # Morte
+                elif tipo == "Died" and not morte_processada:
+                    morte_processada = True
+                    for mat in materiais:
+                        abandono_para_firebase(mat["material"], mat["quantidade"])
+                    log_text.insert(tk.END, f"♻️ {len(materiais)} materiais devolvidos após morte/abandono\n")
+
+                # Parar monitoramento se atracar de novo
+                elif tipo == "Docked":
+                    return
+
+            # Limpa eventos muito antigos do set para evitar crescimento
+            ultimos_abandonos = {
+                eid for eid in ultimos_abandonos
+                if datetime.fromisoformat(eid.rsplit("|", 1)[-1]) > datetime.utcnow() - timedelta(minutes=5)
+            }
+
+        except Exception as e:
+            log_text.insert(tk.END, f"[ERRO VERIFICAÇÃO] {str(e)}\n")
+            import traceback
+            traceback.print_exc()
+
+        time.sleep(1)
+
+def processar_carga():
+    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada, verificacao_thread
+    global ultima_morte_detectada, ultima_resurreicao_processada, verificacao_thread, ultimo_undocked_ts
+
+    log_path = obter_log_mais_recente()
+    if not log_path or not log_path.exists():
+        log_text.insert(tk.END, "[ERRO] Log não encontrado.\n")
+        return
+
+    log_text.insert(tk.END, "[🛰️] Monitorando log para eventos de compra e entrega...\n")
+
+    eventos_processados = set()
+    materiais_entregues = []
+
+    while True:
+        try:
+            with open(log_path, encoding="utf-8") as f:
+                linhas = f.readlines()
+
+            eventos = [json.loads(l) for l in linhas if l.strip().startswith('{')]
+            eventos = sorted(eventos, key=lambda e: e["timestamp"])  # Ordenar por tempo
+
+            # ⚠️ Ignora eventos mais antigos que 60s para evitar leitura de logs antigos
+            agora = datetime.utcnow()
+            eventos = [e for e in eventos if (agora - datetime.strptime(e["timestamp"], "%Y-%m-%dT%H:%M:%SZ")).total_seconds() <= 60]
+
+
+            for evento in eventos:
+                tipo = evento.get("event")
+                timestamp = evento.get("timestamp")
+                evento_id = f"{tipo}-{timestamp}"
+
+                # Ignora eventos já processados
+                if evento_id in eventos_processados:
+                    continue
+
+                # 1. Evento de DOCKED → ponto de compra
+                if tipo == "Docked":
+                    ultima_entrega_realizada = False
+                    log_text.insert(tk.END, "[INFO] Atracado. Aguardando compras...\n")
+
+                # 2. MARKETBUY (Compras na estação)
+                elif tipo == "MarketBuy":
+                    if ultima_entrega_realizada:
+                        continue
+                    nome = evento.get("Type_Localised") or evento.get("Type")
+                    qtd = evento.get("Count", 0)
+                    if nome and qtd:
+                        materiais_entregues.append({
+                            "id": gerar_id(nome),
+                            "material": nome,
+                            "quantidade": qtd
+                        })
+                        log_text.insert(tk.END, f"[💰] Compra detectada: {nome} x{qtd}\n")
+
+                # 3. UNDОCKED → iniciar verificação de morte/abandono
+                elif tipo == "Undocked":
+                    ts_undocked = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+                    if not ultimo_undocked_ts or ts_undocked > ultimo_undocked_ts:
+                        ultimo_undocked_ts = ts_undocked
+                        log_text.insert(tk.END, "[🚀] Undocked detectado. Iniciando verificação de carga...\n")
+                        
+                        def iniciar_verificacao():
+                            global verificacao_em_andamento
+                            verificacao_em_andamento = True
+                            verificar_abandono_ou_morte(materiais_entregues.copy())
+                            verificacao_em_andamento = False
+
+                        # Interrompe o loop anterior se ainda estiver rodando (não temos cancelamento, então só permite um)
+                        if not verificacao_em_andamento:
+                            global verificacao_thread
+                            verificacao_thread = threading.Thread(target=iniciar_verificacao, daemon=True)
+                            verificacao_thread.start()
+                            ultima_entrega_realizada = True
+                            materiais_entregues.clear()
+
+
+                eventos_processados.add(evento_id)
+
+        except Exception as e:
+            log_text.insert(tk.END, f"[ERRO] {str(e)}\n")
+            import traceback
+            traceback.print_exc()
+
+        time.sleep(1)
+
+def abandono_para_firebase(nome, qtd):
+    construcao_nome = construcoes_var.get()
+    if not construcao_nome or construcao_nome not in construcoes_cache:
+        log_text.insert(tk.END, "⚠️ Nenhuma construção válida para reverter.\n")
+        return
+
+    doc_ref = db.collection("inventories").document(construcoes_cache[construcao_nome]["doc_id"])
+    doc = doc_ref.get()
+    if not doc.exists:
+        return
+
+    materiais = doc.to_dict().get("items", [])
+    for mat in materiais:
+        if gerar_id(mat["material"]) == gerar_id(nome):
+            mat["restante"] += qtd
+            log_text.insert(tk.END, f"↩ {mat['material']}: +{qtd} (Abandono)\n")
+            break
+
+    doc_ref.update({"items": materiais})
+
 
 def loop_verificacao():
     ultimo_dock_log = "dock_status.txt"
@@ -241,246 +409,6 @@ from datetime import datetime, timedelta
 
 ultima_morte_detectada = None
 ultima_resurreicao_processada = None
-
-def processar_carga():
-    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada, ultima_morte_detectada
-    global ultima_morte_processada, ultima_resurreicao_processada, leitura_carga_permitida
-
-    cargo_path = LOG_DIR / "Cargo.json"
-    log_path = obter_log_mais_recente()
-    ultimo_evento_processado = None
-
-    # Verifica se há um evento "Undocked" nos últimos 30 segundos
-    if log_path and log_path.exists():
-        with open(log_path, encoding="utf-8") as f:
-            linhas = f.readlines()
-        # Aqui usamos uma busca flexível; garante que qualquer linha com "Undocked" seja considerada
-        undocked_events = [json.loads(linha) for linha in linhas if 'Undocked' in linha]
-        if undocked_events:
-            undocked_event = sorted(undocked_events, key=lambda e: e["timestamp"], reverse=True)[0]
-            ts_undocked = datetime.strptime(undocked_event["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
-            if datetime.utcnow() - ts_undocked <= timedelta(seconds=30):
-                leitura_carga_permitida = True
-            else:
-                leitura_carga_permitida = False
-        else:
-            leitura_carga_permitida = False
-    else:
-        leitura_carga_permitida = False
-
-    # Se não houve Undocked recente, não processa a carga
-    if not leitura_carga_permitida:
-        return
-
-    while True:
-        try:
-            # Verifica morte e ressurreição
-            if log_path and log_path.exists():
-                with open(log_path, encoding="utf-8") as f:
-                    linhas = f.readlines()
-                    eventos = [json.loads(linha) for linha in linhas if '"event":"Died"' in linha or '"event":"Resurrect"' in linha]
-
-                # Filtra apenas eventos dos últimos 10 segundos
-                agora = datetime.utcnow()
-                eventos_recentes = []
-                for evento in eventos:
-                    ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
-                    if (agora - ts).total_seconds() <= 10:
-                        eventos_recentes.append(evento)
-                eventos_recentes.sort(key=lambda e: e["timestamp"], reverse=True)
-
-                morte_processada = False
-                resurrect_processado = False
-                for evento in eventos_recentes:
-                    ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
-                    
-                    if not morte_processada and evento.get("event") == "Died":
-                        if not ultima_morte_detectada or ts > ultima_morte_detectada:
-                            ultima_morte_detectada = ts
-                            if not ultima_morte_processada or ts > ultima_morte_processada:
-                                ultima_morte_processada = ts
-                            morte_processada = True
-                    
-                    elif evento.get("event") == "Resurrect" and ultima_morte_detectada:
-                        if ts > ultima_morte_detectada and (ts - ultima_morte_detectada).total_seconds() <= 30:
-                            if not ultima_resurreicao_processada or ts > ultima_resurreicao_processada:
-                                ultima_resurreicao_processada = ts
-                                log_text.insert(tk.END, f"[💀] Resurrect detectado. Revertendo entrega...\n")
-
-                            if ultima_entrega_realizada and ultimo_cargo:
-                                construcao_nome = construcoes_var.get()
-                                if construcao_nome and construcao_nome in construcoes_cache:
-                                    construcao = construcoes_cache[construcao_nome]
-                                    doc_ref = db.collection("inventories").document(construcao["doc_id"])
-                                    doc = doc_ref.get()
-                                    if doc.exists:
-                                        materiais = doc.to_dict().get("items", [])
-                                        revertidos = 0
-
-                                        for item in ultimo_cargo:
-                                            nome_raw = item.get("Name_Localised") or item.get("Name")
-                                            nome_id = gerar_id(nome_raw)
-                                            quantidade = item.get("Count", 0)
-
-                                            for mat in materiais:
-                                                if gerar_id(mat["material"]) == nome_id:
-                                                    mat["restante"] += quantidade
-                                                    log_text.insert(tk.END, 
-                                                        f"↩ {mat['material']}: Revertido +{quantidade} após morte\n"
-                                                    )
-                                                    revertidos += 1
-
-                                        if revertidos > 0:
-                                            doc_ref.update({"items": materiais})
-                                            log_text.insert(tk.END, f"♻️ {revertidos} materiais devolvidos na construção {construcao_nome}\n")
-                                        else:
-                                            log_text.insert(tk.END, "⚠️ Nenhum material correspondente para reverter\n")
-                                else:
-                                    log_text.insert(tk.END, "⚠️ Nenhuma construção válida selecionada para reverter\n")
-
-                            ultimo_cargo = []
-                            ultima_entrega_realizada = False
-                            time.sleep(5)
-                            break
-
-                if resurrect_processado:
-                    time.sleep(5)
-                    break
-
-            # Verifica se arquivo de carga existe
-            if not cargo_path.exists():
-                time.sleep(5)
-                continue
-
-            stat = os.stat(cargo_path)
-            if stat.st_mtime <= ultimo_cargo_timestamp:
-                time.sleep(2)
-                continue
-
-            with open(cargo_path, encoding="utf-8") as f:
-                cargo_data = json.load(f)
-
-            novo_cargo = cargo_data.get("Inventory", [])
-            ultimo_cargo_timestamp = stat.st_mtime
-
-            nomes_carga = [i['Name'] for i in novo_cargo]
-            log_text.insert(tk.END, f"\n[DEBUG] Carga detectada: {nomes_carga}\n")
-
-            if not novo_cargo:
-                ultima_entrega_realizada = False
-                ultimo_cargo = []
-                time.sleep(2)
-                continue
-
-            if ultima_entrega_realizada:
-                time.sleep(2)
-                continue
-
-            # Verifica alterações na carga
-            delta = {}
-            for item in novo_cargo:
-                nome_bruto = item.get("Name_Localised") or item.get("Name")
-                nome_normalizado = normalizar_nome(nome_bruto)
-                qtd = item["Count"]
-
-                item_anterior = next((i for i in ultimo_cargo if normalizar_nome(i.get("Name")) == nome_normalizado), None)
-                if not item_anterior or qtd > item_anterior["Count"]:
-                    delta[nome_normalizado] = qtd - (item_anterior["Count"] if item_anterior else 0)
-                    log_text.insert(tk.END, f"[DEBUG] Delta {nome_normalizado}: +{delta[nome_normalizado]}\n")
-
-            if delta:
-                construcao_nome = construcoes_var.get()
-                if not construcao_nome:
-                    log_text.insert(tk.END, "⚠️ Nenhuma construção selecionada!\n")
-                    continue
-
-                construcao = construcoes_cache.get(construcao_nome)
-                if not construcao:
-                    log_text.insert(tk.END, f"⚠️ Construção '{construcao_nome}' não encontrada no cache\n")
-                    continue
-
-                doc_ref = db.collection("inventories").document(construcao["doc_id"])
-                doc = doc_ref.get()
-                if not doc.exists:
-                    log_text.insert(tk.END, f"⚠️ Documento {construcao['doc_id']} não existe\n")
-                    continue
-
-                materiais = doc.to_dict().get("items", [])
-                atualizados = 0
-
-                for mat in materiais:
-                    mat_nome_normalizado = normalizar_nome(mat["material"])
-                    if mat_nome_normalizado in delta:
-                        novo_restante = max(0, mat["restante"] - delta[mat_nome_normalizado])
-                        log_text.insert(tk.END,
-                            f"✎ {mat['material']}: {mat['restante']} → {novo_restante} "
-                            f"(Deduzido: {delta[mat_nome_normalizado]})\n"
-                        )
-                        mat["restante"] = novo_restante
-                        atualizados += 1
-
-                if atualizados > 0:
-                    doc_ref.update({"items": materiais})
-                    log_text.insert(tk.END, f"✅ {atualizados} materiais atualizados na construção {construcao_nome}\n")
-                    ultima_entrega_realizada = True
-
-            # Atualiza último cargo, mas só processa na saída
-            ultimo_cargo = novo_cargo
-
-            # Verifica evento Undocked para iniciar entrega
-            with open(log_path, encoding="utf-8") as f:
-                eventos_log = [json.loads(l) for l in f if '"event":"Undocked"' in l]
-
-            if eventos_log:
-                undocked_event = sorted(eventos_log, key=lambda e: e["timestamp"], reverse=True)[0]
-                ts_undocked = datetime.strptime(undocked_event["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
-                if datetime.utcnow() - ts_undocked <= timedelta(seconds=30):  # Considera recente
-
-                    if ultimo_cargo and not ultima_entrega_realizada:
-                        log_text.insert(tk.END, "[🚀] Saída detectada. Iniciando entrega...\n")
-
-                        construcao_nome = construcoes_var.get()
-                        if not construcao_nome:
-                            log_text.insert(tk.END, "⚠️ Nenhuma construção selecionada!\n")
-                        else:
-                            construcao = construcoes_cache.get(construcao_nome)
-                            if not construcao:
-                                log_text.insert(tk.END, f"⚠️ Construção '{construcao_nome}' não encontrada no cache\n")
-                            else:
-                                doc_ref = db.collection("inventories").document(construcao["doc_id"])
-                                doc = doc_ref.get()
-                                if doc.exists:
-                                    materiais = doc.to_dict().get("items", [])
-                                    atualizados = 0
-
-                                    for item in ultimo_cargo:
-                                        nome_bruto = item.get("Name_Localised") or item.get("Name")
-                                        nome_id = gerar_id(nome_bruto)
-                                        qtd = item.get("Count", 0)
-
-                                        for mat in materiais:
-                                            if gerar_id(mat["material"]) == nome_id:
-                                                novo_restante = max(0, mat["restante"] - qtd)
-                                                log_text.insert(tk.END,
-                                                    f"✎ {mat['material']}: {mat['restante']} → {novo_restante} (Deduzido: {qtd})\n"
-                                                )
-                                                mat["restante"] = novo_restante
-                                                atualizados += 1
-
-                                    if atualizados > 0:
-                                        doc_ref.update({"items": materiais})
-                                        log_text.insert(tk.END, f"✅ {atualizados} materiais atualizados na construção {construcao_nome}\n")
-                                        ultima_entrega_realizada = True
-                                else:
-                                    log_text.insert(tk.END, f"⚠️ Documento {construcao['doc_id']} não existe\n")
-
-
-        except Exception as e:
-            log_text.insert(tk.END, f"🔥 Erro crítico: {str(e)}\n")
-            import traceback
-            traceback.print_exc()
-
-        time.sleep(5)
 
 def carregar_construcoes():
     uid = uid_entry.get().strip()
