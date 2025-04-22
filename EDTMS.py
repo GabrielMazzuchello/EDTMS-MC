@@ -6,13 +6,28 @@ import threading
 import webbrowser
 import unicodedata
 import tkinter as tk
-from PIL import Image, ImageTk 
-from tkinter import messagebox, scrolledtext
 import firebase_admin
-from firebase_admin import credentials, firestore
+from tkinter import ttk
 from pathlib import Path
+from PIL import Image, ImageTk 
+from datetime import datetime, timedelta
+from tkinter import messagebox, scrolledtext
+from firebase_admin import credentials, firestore
 
-#  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
+construcoes_cache = {}
+ultimo_cargo = []
+ultimo_cargo_timestamp = 0
+ultima_entrega_realizada = False
+ultima_morte_processada = None
+ultima_undocked_processada = None
+ultima_posicao_log = 0
+ultima_sessao_jogo = None
+leitura_carga_permitida = False
+ultimos_abandonos = set()  # ← Agora fora da função, persistente
+verificacao_em_andamento = False
+verificacao_thread = None
+ultimo_undocked_ts = None
+processar_carga_em_execucao = False
 
 # pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
 
@@ -176,6 +191,251 @@ def atualizar_firestore(nome_estacao, materiais_script):
     log_text.insert(tk.END, f"Estação '{nome_estacao}' sincronizada com {len(novos_itens)} materiais.\n")
     log_text.see(tk.END)
 
+def verificar_abandono_ou_morte(materiais):
+    global ultima_morte_detectada, ultimos_abandonos, ultimo_undocked_ts
+
+    log_path = obter_log_mais_recente()
+    if not log_path or not log_path.exists():
+        return
+
+    morte_processada = False
+
+    while True:
+        try:
+            eventos = []
+            linhas_invalidas = 0
+            with open(log_path, encoding="utf-8") as f:
+                for l in f:
+                    l = l.strip()
+                    if not l:
+                        continue
+                    try:
+                        eventos.append(json.loads(l))
+                    except json.JSONDecodeError:
+                        linhas_invalidas += 1
+
+            if linhas_invalidas > 0:
+                log_text.insert(tk.END, f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)\n")
+
+
+            for evento in eventos:
+                tipo = evento.get("event")
+                ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+
+                # Ignorar eventos antigos ou antes do undocked
+                if ultimo_undocked_ts and ts <= ultimo_undocked_ts:
+                    continue
+
+                # Abandono manual (EjectCargo)
+                if tipo == "EjectCargo":
+                    nome = evento.get("Type_Localised") or evento.get("Type")
+                    qtd = evento.get("Count", 0)
+                    mat_id = gerar_id(nome)
+                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|eject"
+
+                    if evento_id not in ultimos_abandonos:
+                        ultimos_abandonos.add(evento_id)
+                        abandono_para_firebase(nome, qtd)
+                
+                # Venda no mercado (MarketSell)
+                elif tipo == "MarketSell":
+                    nome = evento.get("Type_Localised") or evento.get("Type")
+                    qtd = evento.get("Count", 0)
+                    mat_id = gerar_id(nome)
+                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|marketsell"
+
+                    if evento_id not in ultimos_abandonos:
+                        ultimos_abandonos.add(evento_id)
+                        abandono_para_firebase(nome, qtd)
+                        log_text.insert(tk.END, f"💸 Venda detectada: {nome} x{qtd} (Revertido)\n")
+
+                # Transferência via porta-frotas
+                elif tipo == "CargoTransfer":
+                    for transf in evento.get("Transfers", []):
+                        direcao = transf.get("Direction")
+                        nome = transf.get("Type_Localised") or transf.get("Type")
+                        qtd = transf.get("Count", 0)
+                        mat_id = gerar_id(nome)
+                        evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|{direcao}"
+
+                        if evento_id in ultimos_abandonos:
+                            continue
+                        ultimos_abandonos.add(evento_id)
+
+                        if direcao == "tocarrier":
+                            abandono_para_firebase(nome, qtd)
+                        elif direcao == "toship":
+                            subtrair_do_firestore(nome, qtd)
+                            log_text.insert(tk.END, f"[💰] Transferência do porta-frotas detectada: {nome} x{qtd} (Comprado)\n")
+
+                # Morte
+                elif tipo == "Died" and not morte_processada:
+                    morte_processada = True
+                    for mat in materiais:
+                        abandono_para_firebase(mat["material"], mat["quantidade"])
+                    log_text.insert(tk.END, f"♻️ {len(materiais)} materiais devolvidos após morte/abandono\n")
+
+                # Fim do monitoramento
+                elif tipo == "Docked":
+                    return
+
+            # Limpeza de eventos antigos (5min)
+            ultimos_abandonos = {
+                eid for eid in ultimos_abandonos
+                if datetime.fromisoformat(eid.split("|")[2]) > datetime.utcnow() - timedelta(minutes=5)
+            }
+
+        except Exception as e:
+            log_text.insert(tk.END, f"[ERRO VERIFICAÇÃO] {str(e)}\n")
+            import traceback
+            traceback.print_exc()
+
+        time.sleep(1)
+
+def processar_carga():
+    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada, verificacao_thread, processar_carga_em_execucao
+    global ultima_morte_detectada, ultima_resurreicao_processada, verificacao_thread, ultimo_undocked_ts
+    if processar_carga_em_execucao:
+        return
+    processar_carga_em_execucao = True
+
+    log_path = obter_log_mais_recente()
+    if not log_path or not log_path.exists():
+        log_text.insert(tk.END, "[ERRO] Log não encontrado.\n")
+        return
+
+    log_text.insert(tk.END, "[🛰️] Monitorando log para eventos de compra e entrega...\n")
+
+    eventos_processados = set()
+    materiais_entregues = []
+
+    while True:
+        try:
+            with open(log_path, encoding="utf-8") as f:
+                linhas = f.readlines()
+
+            eventos = []
+            linhas_invalidas = 0
+            with open(log_path, encoding="utf-8") as f:
+                for l in f:
+                    l = l.strip()
+                    if not l:
+                        continue
+                    try:
+                        eventos.append(json.loads(l))
+                    except json.JSONDecodeError:
+                        linhas_invalidas += 1
+
+            eventos = sorted(eventos, key=lambda e: e["timestamp"])  # Ordenar por tempo
+
+            # ⚠️ Ignora eventos mais antigos que 60s para evitar leitura de logs antigos
+            agora = datetime.utcnow()
+            eventos = [e for e in eventos if (agora - datetime.strptime(e["timestamp"], "%Y-%m-%dT%H:%M:%SZ")).total_seconds() <= 60]
+
+
+            for evento in eventos:
+                tipo = evento.get("event")
+                timestamp = evento.get("timestamp")
+                evento_id = f"{tipo}-{timestamp}"
+
+                # Ignora eventos já processados
+                if evento_id in eventos_processados:
+                    continue
+
+                # 1. Evento de DOCKED → ponto de compra
+                if tipo == "Docked":
+                    ultima_entrega_realizada = False
+                    log_text.insert(tk.END, "[INFO] Atracado. Aguardando compras...\n")
+                    eventos_processados.add(evento_id)
+
+                # 2. MARKETBUY (Compras na estação)
+                elif tipo == "MarketBuy":
+                    if ultima_entrega_realizada:
+                        continue
+                    nome = evento.get("Type_Localised") or evento.get("Type")
+                    qtd = evento.get("Count", 0)
+                    if nome and qtd:
+                        materiais_entregues.append({
+                            "id": gerar_id(nome),
+                            "material": nome,
+                            "quantidade": qtd
+                        })
+                        log_text.insert(tk.END, f"[💰] Compra detectada: {nome} x{qtd}\n")
+                        subtrair_do_firestore(nome, qtd)  # 👈 subtrai diretamente após compra
+                        eventos_processados.add(evento_id)
+
+
+                # 3. UNDОCKED → iniciar verificação de morte/abandono
+                elif tipo == "Undocked":
+                    ts_undocked = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
+                    if not ultimo_undocked_ts or ts_undocked > ultimo_undocked_ts:
+                        ultimo_undocked_ts = ts_undocked
+                        log_text.insert(tk.END, "[🚀] Undocked detectado. Iniciando verificação de carga...\n")
+                        
+                        def iniciar_verificacao():
+                            global verificacao_em_andamento
+                            verificacao_em_andamento = True
+                            verificar_abandono_ou_morte(materiais_entregues.copy())
+                            verificacao_em_andamento = False
+
+                        # Interrompe o loop anterior se ainda estiver rodando (não temos cancelamento, então só permite um)
+                        if not verificacao_em_andamento:
+                            global verificacao_thread
+                            verificacao_thread = threading.Thread(target=iniciar_verificacao, daemon=True)
+                            verificacao_thread.start()
+                            ultima_entrega_realizada = True
+                            materiais_entregues.clear()
+                            eventos_processados.add(evento_id)
+        except Exception as e:
+            log_text.insert(tk.END, f"[ERRO] {str(e)}\n")
+            import traceback
+            traceback.print_exc()
+        time.sleep(1)
+
+    processar_carga_em_execucao = False
+
+def abandono_para_firebase(nome, qtd):
+    construcao_nome = construcoes_var.get()
+    if not construcao_nome or construcao_nome not in construcoes_cache:
+        log_text.insert(tk.END, "⚠️ Nenhuma construção válida para reverter.\n")
+        return
+
+    doc_ref = db.collection("inventories").document(construcoes_cache[construcao_nome]["doc_id"])
+    doc = doc_ref.get()
+    if not doc.exists:
+        return
+
+    materiais = doc.to_dict().get("items", [])
+    for mat in materiais:
+        if gerar_id(mat["material"]) == gerar_id(nome):
+            mat["restante"] += qtd
+            log_text.insert(tk.END, f"↩ {mat['material']}: +{qtd} (Abandono)\n")
+            break
+
+    doc_ref.update({"items": materiais})
+
+def subtrair_do_firestore(nome, qtd):
+    construcao_nome = construcoes_var.get()
+    if not construcao_nome or construcao_nome not in construcoes_cache:
+        log_text.insert(tk.END, "⚠️ Nenhuma construção válida para subtrair.\n")
+        return
+
+    doc_ref = db.collection("inventories").document(construcoes_cache[construcao_nome]["doc_id"])
+    doc = doc_ref.get()
+    if not doc.exists:
+        return
+
+    materiais = doc.to_dict().get("items", [])
+    for mat in materiais:
+        if gerar_id(mat["material"]) == gerar_id(nome):
+            novo_valor = max(0, mat["restante"] - qtd)
+            log_text.insert(tk.END, f"✎ {mat['material']}: {mat['restante']} → {novo_valor} (Comprado)\n")
+            mat["restante"] = novo_valor
+            break
+
+    doc_ref.update({"items": materiais})
+
+
 
 def loop_verificacao():
     ultimo_dock_log = "dock_status.txt"
@@ -188,12 +448,14 @@ def loop_verificacao():
             time.sleep(5)
             continue
 
+        threading.Thread(target=processar_carga, daemon=True).start()
         nome_estacao, tipo_estacao, materiais = processar_log(log_path)
 
         if nome_estacao:
             if nome_estacao != ultima_estacao:
                 ultima_estacao = nome_estacao
                 ultimo_estado_materiais = {}  # Zera o estado quando troca de estação
+                leitura_carga_permitida = False
 
                 with open(ultimo_dock_log, "w", encoding="utf-8") as f:
                     f.write(f"Docked em {nome_estacao} ({tipo_estacao})\n")
@@ -211,14 +473,67 @@ def loop_verificacao():
 
         time.sleep(5)
 
+def normalizar_nome(nome):
+    nome = nome.lower()
+    substituicoes = {
+        'í': 'i', 'ó': 'o', 'ã': 'a', 'á': 'a', 
+        'é': 'e', 'ê': 'e', 'ç': 'c', 'ú': 'u',
+        'construction': '', 'materials': '', ' ': '_',
+        '-': '', "'": "", ":": "", "(": "", ")": ""
+    }
+    for k, v in substituicoes.items():
+        nome = nome.replace(k, v)
+    return nome.rstrip('s').strip('_')
+
+from datetime import datetime, timedelta
+
+ultima_morte_detectada = None
+ultima_resurreicao_processada = None
+
+def carregar_construcoes():
+    uid = uid_entry.get().strip()
+    if not uid:
+        messagebox.showerror("Erro", "Digite seu UID primeiro!")
+        return
+    
+    try:
+        construcoes_ref = db.collection("inventories")
+        query = construcoes_ref.where("collaborators", "array_contains", uid).get()
+        
+        construcoes = []
+        for doc in query:
+            data = doc.to_dict()
+            construcoes.append({
+                "doc_id": doc.id,  # ← Armazena o ID do documento
+                "nome": data.get("name", "Sem nome"),
+                "dados": data
+            })
+        
+        construcoes_dropdown["values"] = [c["nome"] for c in construcoes]
+        construcoes_dropdown.set("")
+        
+        global construcoes_cache
+        construcoes_cache = {c["nome"]: c for c in construcoes}
+        
+        log_text.insert(tk.END, f"Carregadas {len(construcoes)} construções\n")
+        
+    except Exception as e:
+        log_text.insert(tk.END, f"Erro ao carregar: {str(e)}\n")
+
+def obter_materiais_da_construcao(nome_construcao):
+    if not nome_construcao or not construcoes_cache.get(nome_construcao):
+        return None
+    return construcoes_cache[nome_construcao]["dados"]["items"]
 
 def iniciar_loop():
     threading.Thread(target=loop_verificacao, daemon=True).start()
 
+
+
 # Interface Gráfica Tkinter - Design Atualizado
 janela = tk.Tk()
 janela.title("")
-janela.geometry("500x400")  # Altura um pouco maior
+janela.geometry("500x400")
 janela.configure(bg="#1a1a1a")
 janela.overrideredirect(True)
 
@@ -229,15 +544,54 @@ COR_DESTAQUE = "#ff9900"
 FONTE_TITULO = ("Arial", 12, "bold")
 FONTE_TEXTO = ("Arial", 9)
 
+# Estilo ttk para bordas arredondadas nos botões
+style = ttk.Style()
+style.theme_use("default")
+style.configure("Rounded.TButton", padding=6, relief="flat", background=COR_DESTAQUE, foreground="#1a1a1a", font=("Arial", 9, "bold"))
+style.map("Rounded.TButton",
+    background=[("active", "#ffaa33")],
+    foreground=[("disabled", "#888888")]
+)
+
 # Frame Principal
 frame_principal = tk.Frame(janela, bg=COR_DE_FUNDO)
-frame_principal.pack(fill="both", expand=True, padx=20, pady=15)
+frame_principal.pack(fill="both", expand=True, padx=10, pady=10)
 
-# --- Área do Cabeçalho (Arrastável) ---
+# Top Frame (UID, Construção e Botões)
+top_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
+top_frame.pack(fill="x", pady=(0, 5))
+
+tk.Label(top_frame, text="UID:", bg=COR_DE_FUNDO, fg=COR_TEXTO).grid(row=0, column=0, sticky="w", padx=5)
+uid_entry = tk.Entry(top_frame, bg="#2a2a2a", fg=COR_TEXTO, width=25)
+uid_entry.grid(row=0, column=1, sticky="ew", padx=5)
+
+load_btn = ttk.Button(top_frame, text="Carregar", style="Rounded.TButton", command=carregar_construcoes)
+load_btn.grid(row=0, column=2, padx=(5, 0))
+
+# Botão Fechar ao lado do "Carregar"
+btn_fechar = tk.Label(
+    top_frame,
+    text="✕",
+    font=("Arial", 12),
+    fg=COR_TEXTO,
+    bg=COR_DE_FUNDO,
+    cursor="hand2"
+)
+btn_fechar.grid(row=0, column=3, padx=(10, 5))
+btn_fechar.bind("<Button-1>", lambda e: janela.destroy())
+
+# Dropdown de Construções
+tk.Label(top_frame, text="Construção:", bg=COR_DE_FUNDO, fg=COR_TEXTO).grid(row=1, column=0, sticky="w", padx=5, pady=(5, 0))
+construcoes_var = tk.StringVar()
+construcoes_dropdown = ttk.Combobox(top_frame, textvariable=construcoes_var, state="readonly", width=32)
+construcoes_dropdown.grid(row=1, column=1, columnspan=3, sticky="ew", padx=5, pady=(5, 0))
+
+top_frame.grid_columnconfigure(1, weight=1)
+
+# Cabeçalho
 header_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
-header_frame.pack(side="top", fill="x", pady=(0, 15))
+header_frame.pack(side="top", fill="x", pady=(0, 10))
 
-# Título Centralizado
 cabecalho = tk.Label(
     header_frame,
     text="ELITE DANGEROUS CONSTRUCTION SYNC",
@@ -261,55 +615,30 @@ try:
     logo_img = Image.open(logo_path)
     logo_img = logo_img.resize((200, 60), Image.LANCZOS)
     logo_tk = ImageTk.PhotoImage(logo_img)
-    
-    # Cria um frame para o efeito de hover
-    logo_frame = tk.Frame(
-        header_frame,
-        bg=COR_DE_FUNDO,
-        highlightbackground=COR_DE_FUNDO,
-        highlightthickness=2
-    )
+
+    logo_frame = tk.Frame(header_frame, bg=COR_DE_FUNDO, highlightbackground=COR_DE_FUNDO, highlightthickness=2)
     logo_frame.pack(pady=5)
-    
-    logo_label = tk.Label(
-        logo_frame,
-        image=logo_tk,
-        bg=COR_DE_FUNDO,
-        cursor="hand2"
-    )
+
+    logo_label = tk.Label(logo_frame, image=logo_tk, bg=COR_DE_FUNDO, cursor="hand2")
     logo_label.image = logo_tk
     logo_label.pack()
-    
-    # Efeitos Interativos
+
     def hover_enter(e):
         logo_frame.config(highlightbackground=COR_DESTAQUE)
         logo_label.config(bg="#252525")
-        
+
     def hover_leave(e):
         logo_frame.config(highlightbackground=COR_DE_FUNDO)
         logo_label.config(bg=COR_DE_FUNDO)
-    
-    # Bind dos eventos
+
     logo_label.bind("<Enter>", hover_enter)
     logo_label.bind("<Leave>", hover_leave)
     logo_label.bind("<Button-1>", abrir_site)
-    
+
 except Exception as e:
     print(f"Erro ao carregar logo: {str(e)}")
 
-# --- Botão Fechar ---
-btn_fechar = tk.Label(
-    janela,
-    text="✕",
-    font=("Arial", 14),
-    fg=COR_TEXTO,
-    bg=COR_DE_FUNDO,
-    cursor="hand2"
-)
-btn_fechar.place(x=465, y=5)  # Posição ajustada
-btn_fechar.bind("<Button-1>", lambda e: janela.destroy())
-
-# --- Área de Log Estilizada ---
+# Área de Log
 log_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
 log_frame.pack(fill="both", expand=True)
 
@@ -317,7 +646,7 @@ log_text = scrolledtext.ScrolledText(
     log_frame,
     wrap=tk.WORD,
     width=60,
-    height=12,
+    height=10,
     bg="#2a2a2a",
     fg=COR_TEXTO,
     insertbackground=COR_DESTAQUE,
@@ -328,27 +657,26 @@ log_text = scrolledtext.ScrolledText(
 )
 log_text.pack(fill="both", expand=True)
 
-# Personalização da Scrollbar
 log_text.vbar.config(
     troughcolor="#2a2a2a",
     bg="#404040",
     activebackground=COR_DESTAQUE
 )
 
-# --- Barra de Status Premium ---
+# Barra de Status
 status_bar = tk.Label(
     janela,
     text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.0",
     bg=COR_DESTAQUE,
     fg="#1a1a1a",
-    font=("Consolas", 9, "bold"),
+    font=("Consolas", 10, "bold"),
     height=2,
     anchor="center",
     padx=10
 )
 status_bar.pack(side="bottom", fill="x")
 
-# --- Sistema de Arraste ---
+# Sistema de Arraste
 def start_drag(event):
     janela._offset_x = event.x
     janela._offset_y = event.y
@@ -358,7 +686,6 @@ def do_drag(event):
     y = janela.winfo_pointery() - janela._offset_y
     janela.geometry(f"+{x}+{y}")
 
-# Permite arrastar por qualquer parte do cabeçalho
 header_frame.bind("<Button-1>", start_drag)
 header_frame.bind("<B1-Motion>", do_drag)
 
@@ -367,5 +694,6 @@ log_text.tag_config("success", foreground="#00ff00")
 log_text.insert(tk.END, "[🛰️ SISTEMA] ", "success")
 log_text.insert(tk.END, "Conectado aos servidores da Federação!\n")
 
+# Iniciar sistema
 iniciar_loop()
 janela.mainloop()
