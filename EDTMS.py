@@ -6,13 +6,7 @@ import threading
 import webbrowser
 import unicodedata
 import tkinter as tk
-import firebase_adming
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QComboBox, QTextEdit, QFrame
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap, QColor
-from PyQt6.QtCore import QSize
-from PyQt6.QtWidgets import QScrollArea
-from PyQt6.QtGui import QIcon
+import firebase_admin
 from tkinter import ttk
 from pathlib import Path
 from PIL import Image, ImageTk 
@@ -34,8 +28,6 @@ verificacao_em_andamento = False
 verificacao_thread = None
 ultimo_undocked_ts = None
 processar_carga_em_execucao = False
-
-#  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
 
 # pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
 
@@ -222,24 +214,59 @@ def verificar_abandono_ou_morte(materiais):
                     except json.JSONDecodeError:
                         linhas_invalidas += 1
 
+            if linhas_invalidas > 0:
+                log_text.insert(tk.END, f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)\n")
+
+
             for evento in eventos:
                 tipo = evento.get("event")
                 ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
 
-                # Evita eventos anteriores ao último undocked
+                # Ignorar eventos antigos ou antes do undocked
                 if ultimo_undocked_ts and ts <= ultimo_undocked_ts:
                     continue
 
-                # Ejeção de carga não abandonada
+                # Abandono manual (EjectCargo)
                 if tipo == "EjectCargo":
                     nome = evento.get("Type_Localised") or evento.get("Type")
                     qtd = evento.get("Count", 0)
                     mat_id = gerar_id(nome)
-                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}"
+                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|eject"
 
                     if evento_id not in ultimos_abandonos:
                         ultimos_abandonos.add(evento_id)
                         abandono_para_firebase(nome, qtd)
+                
+                # Venda no mercado (MarketSell)
+                elif tipo == "MarketSell":
+                    nome = evento.get("Type_Localised") or evento.get("Type")
+                    qtd = evento.get("Count", 0)
+                    mat_id = gerar_id(nome)
+                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|marketsell"
+
+                    if evento_id not in ultimos_abandonos:
+                        ultimos_abandonos.add(evento_id)
+                        abandono_para_firebase(nome, qtd)
+                        log_text.insert(tk.END, f"💸 Venda detectada: {nome} x{qtd} (Revertido)\n")
+
+                # Transferência via porta-frotas
+                elif tipo == "CargoTransfer":
+                    for transf in evento.get("Transfers", []):
+                        direcao = transf.get("Direction")
+                        nome = transf.get("Type_Localised") or transf.get("Type")
+                        qtd = transf.get("Count", 0)
+                        mat_id = gerar_id(nome)
+                        evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|{direcao}"
+
+                        if evento_id in ultimos_abandonos:
+                            continue
+                        ultimos_abandonos.add(evento_id)
+
+                        if direcao == "tocarrier":
+                            abandono_para_firebase(nome, qtd)
+                        elif direcao == "toship":
+                            subtrair_do_firestore(nome, qtd)
+                            log_text.insert(tk.END, f"[💰] Transferência do porta-frotas detectada: {nome} x{qtd} (Comprado)\n")
 
                 # Morte
                 elif tipo == "Died" and not morte_processada:
@@ -248,14 +275,14 @@ def verificar_abandono_ou_morte(materiais):
                         abandono_para_firebase(mat["material"], mat["quantidade"])
                     log_text.insert(tk.END, f"♻️ {len(materiais)} materiais devolvidos após morte/abandono\n")
 
-                # Parar monitoramento se atracar de novo
+                # Fim do monitoramento
                 elif tipo == "Docked":
                     return
 
-            # Limpa eventos muito antigos do set para evitar crescimento
+            # Limpeza de eventos antigos (5min)
             ultimos_abandonos = {
                 eid for eid in ultimos_abandonos
-                if datetime.fromisoformat(eid.rsplit("|", 1)[-1]) > datetime.utcnow() - timedelta(minutes=5)
+                if datetime.fromisoformat(eid.split("|")[2]) > datetime.utcnow() - timedelta(minutes=5)
             }
 
         except Exception as e:
@@ -284,6 +311,9 @@ def processar_carga():
 
     while True:
         try:
+            with open(log_path, encoding="utf-8") as f:
+                linhas = f.readlines()
+
             eventos = []
             linhas_invalidas = 0
             with open(log_path, encoding="utf-8") as f:
@@ -296,9 +326,6 @@ def processar_carga():
                     except json.JSONDecodeError:
                         linhas_invalidas += 1
 
-            # if linhas_invalidas > 0:
-                # log_text.insert(tk.END, f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)\n")
-                
             eventos = sorted(eventos, key=lambda e: e["timestamp"])  # Ordenar por tempo
 
             # ⚠️ Ignora eventos mais antigos que 60s para evitar leitura de logs antigos
@@ -504,125 +531,169 @@ def iniciar_loop():
 
 
 # Interface Gráfica Tkinter - Design Atualizado
+janela = tk.Tk()
+janela.title("")
+janela.geometry("500x400")
+janela.configure(bg="#1a1a1a")
+janela.overrideredirect(True)
 
-# Função para obter o caminho do logo
+# Cores e Fontes
+COR_DE_FUNDO = "#1a1a1a"
+COR_TEXTO = "#cccccc"
+COR_DESTAQUE = "#ff9900"
+FONTE_TITULO = ("Arial", 12, "bold")
+FONTE_TEXTO = ("Arial", 9)
 
-# Função para abrir o site
-def abrir_site():
-    webbrowser.open("https://edtms.squareweb.app")
+# Estilo ttk para bordas arredondadas nos botões
+style = ttk.Style()
+style.theme_use("default")
+style.configure("Rounded.TButton", padding=6, relief="flat", background=COR_DESTAQUE, foreground="#1a1a1a", font=("Arial", 9, "bold"))
+style.map("Rounded.TButton",
+    background=[("active", "#ffaa33")],
+    foreground=[("disabled", "#888888")]
+)
 
-# Janela Principal (sem bordas)
-app = QApplication(sys.argv)
-window = QWidget()
-window.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
-window.setGeometry(100, 100, 500, 400)
-window.setStyleSheet("background-color: #1a1a1a;")
+# Frame Principal
+frame_principal = tk.Frame(janela, bg=COR_DE_FUNDO)
+frame_principal.pack(fill="both", expand=True, padx=10, pady=10)
 
-# Layout Principal
-main_layout = QVBoxLayout()
+# Top Frame (UID, Construção e Botões)
+top_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
+top_frame.pack(fill="x", pady=(0, 5))
+
+tk.Label(top_frame, text="UID:", bg=COR_DE_FUNDO, fg=COR_TEXTO).grid(row=0, column=0, sticky="w", padx=5)
+uid_entry = tk.Entry(top_frame, bg="#2a2a2a", fg=COR_TEXTO, width=25)
+uid_entry.grid(row=0, column=1, sticky="ew", padx=5)
+
+load_btn = ttk.Button(top_frame, text="Carregar", style="Rounded.TButton", command=carregar_construcoes)
+load_btn.grid(row=0, column=2, padx=(5, 0))
+
+# Botão Fechar ao lado do "Carregar"
+btn_fechar = tk.Label(
+    top_frame,
+    text="✕",
+    font=("Arial", 12),
+    fg=COR_TEXTO,
+    bg=COR_DE_FUNDO,
+    cursor="hand2"
+)
+btn_fechar.grid(row=0, column=3, padx=(10, 5))
+btn_fechar.bind("<Button-1>", lambda e: janela.destroy())
+
+# Dropdown de Construções
+tk.Label(top_frame, text="Construção:", bg=COR_DE_FUNDO, fg=COR_TEXTO).grid(row=1, column=0, sticky="w", padx=5, pady=(5, 0))
+construcoes_var = tk.StringVar()
+construcoes_dropdown = ttk.Combobox(top_frame, textvariable=construcoes_var, state="readonly", width=32)
+construcoes_dropdown.grid(row=1, column=1, columnspan=3, sticky="ew", padx=5, pady=(5, 0))
+
+top_frame.grid_columnconfigure(1, weight=1)
 
 # Cabeçalho
-header_frame = QFrame()
-header_layout = QVBoxLayout()
-header_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+header_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
+header_frame.pack(side="top", fill="x", pady=(0, 10))
 
-cabecalho = QLabel("ELITE DANGEROUS CONSTRUCTION SYNC")
-cabecalho.setStyleSheet("color: #ff9900; font-size: 16px; font-weight: bold;")
-header_layout.addWidget(cabecalho)
+cabecalho = tk.Label(
+    header_frame,
+    text="ELITE DANGEROUS CONSTRUCTION SYNC",
+    font=FONTE_TITULO,
+    fg=COR_DESTAQUE,
+    bg=COR_DE_FUNDO
+)
+cabecalho.pack(side="top", pady=(0, 5))
 
-# Logo (com hover)
+def get_resource_path(relative_path):
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+def abrir_site(event):
+    webbrowser.open("https://edtms.squareweb.app")
+    status_bar.config(text="Redirecionando para o site EDTMS...")
+
 try:
-    logo_path = "edtms_logo.png"
+    logo_path = get_resource_path("edtms_logo.png")
     logo_img = Image.open(logo_path)
     logo_img = logo_img.resize((200, 60), Image.LANCZOS)
-    logo_tk = QPixmap(logo_img)
+    logo_tk = ImageTk.PhotoImage(logo_img)
 
-    logo_label = QLabel()
-    logo_label.setPixmap(logo_tk)
-    logo_label.setStyleSheet("cursor: pointer;")
+    logo_frame = tk.Frame(header_frame, bg=COR_DE_FUNDO, highlightbackground=COR_DE_FUNDO, highlightthickness=2)
+    logo_frame.pack(pady=5)
 
-    logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    logo_label.mousePressEvent = lambda event: abrir_site()
+    logo_label = tk.Label(logo_frame, image=logo_tk, bg=COR_DE_FUNDO, cursor="hand2")
+    logo_label.image = logo_tk
+    logo_label.pack()
 
-    header_layout.addWidget(logo_label)
+    def hover_enter(e):
+        logo_frame.config(highlightbackground=COR_DESTAQUE)
+        logo_label.config(bg="#252525")
+
+    def hover_leave(e):
+        logo_frame.config(highlightbackground=COR_DE_FUNDO)
+        logo_label.config(bg=COR_DE_FUNDO)
+
+    logo_label.bind("<Enter>", hover_enter)
+    logo_label.bind("<Leave>", hover_leave)
+    logo_label.bind("<Button-1>", abrir_site)
+
 except Exception as e:
     print(f"Erro ao carregar logo: {str(e)}")
 
-header_frame.setLayout(header_layout)
-main_layout.addWidget(header_frame)
-
-# Frame de Topo (UID, Construção e Botões)
-top_frame = QHBoxLayout()
-
-top_frame.addWidget(QLabel("UID:"))
-uid_entry = QLineEdit()
-uid_entry.setStyleSheet("background-color: #2a2a2a; color: #cccccc;")
-top_frame.addWidget(uid_entry)
-
-# Botão Carregar
-load_btn = QPushButton("Carregar")
-load_btn.setStyleSheet("""
-    background-color: #ff9900; color: #1a1a1a; font-weight: bold;
-    padding: 6px; border-radius: 5px;
-""")
-top_frame.addWidget(load_btn)
-
-# Botão Fechar
-btn_fechar = QLabel("✕")
-btn_fechar.setStyleSheet("font-size: 16px; color: #cccccc; cursor: pointer;")
-btn_fechar.mousePressEvent = lambda event: window.close()
-top_frame.addWidget(btn_fechar)
-
-# Dropdown de Construções
-construcoes_dropdown = QComboBox()
-construcoes_dropdown.setStyleSheet("background-color: #2a2a2a; color: #cccccc;")
-top_frame.addWidget(construcoes_dropdown)
-
-main_layout.addLayout(top_frame)
-
 # Área de Log
-log_frame = QFrame()
-log_frame.setStyleSheet("background-color: #2a2a2a;")
-log_text = QTextEdit()
-log_text.setStyleSheet("""
-    background-color: #2a2a2a; color: #cccccc;
-    font-size: 9px; padding: 10px;
-    border: none; selection-background-color: #ff9900;
-""")
-log_text.setText("[🛰️ SISTEMA] Conectado aos servidores da Federação!")
-log_frame_layout = QVBoxLayout()
-log_frame_layout.addWidget(log_text)
-log_frame.setLayout(log_frame_layout)
-main_layout.addWidget(log_frame)
+log_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
+log_frame.pack(fill="both", expand=True)
+
+log_text = scrolledtext.ScrolledText(
+    log_frame,
+    wrap=tk.WORD,
+    width=60,
+    height=10,
+    bg="#2a2a2a",
+    fg=COR_TEXTO,
+    insertbackground=COR_DESTAQUE,
+    selectbackground=COR_DESTAQUE,
+    font=FONTE_TEXTO,
+    relief="flat",
+    highlightthickness=0
+)
+log_text.pack(fill="both", expand=True)
+
+log_text.vbar.config(
+    troughcolor="#2a2a2a",
+    bg="#404040",
+    activebackground=COR_DESTAQUE
+)
 
 # Barra de Status
-status_bar = QLabel("🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.0")
-status_bar.setStyleSheet("""
-    background-color: #ff9900; color: #1a1a1a;
-    font-family: Consolas; font-size: 10px; font-weight: bold;
-    padding: 10px;
-""")
-status_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-main_layout.addWidget(status_bar)
+status_bar = tk.Label(
+    janela,
+    text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.0",
+    bg=COR_DESTAQUE,
+    fg="#1a1a1a",
+    font=("Consolas", 10, "bold"),
+    height=2,
+    anchor="center",
+    padx=10
+)
+status_bar.pack(side="bottom", fill="x")
 
-# Sistema de Arraste (Fazer a janela ser arrastável)
+# Sistema de Arraste
 def start_drag(event):
-    window._offset_x = event.x()
-    window._offset_y = event.y()
+    janela._offset_x = event.x
+    janela._offset_y = event.y
 
 def do_drag(event):
-    x = event.globalX() - window._offset_x
-    y = event.globalY() - window._offset_y
-    window.move(x, y)
+    x = janela.winfo_pointerx() - janela._offset_x
+    y = janela.winfo_pointery() - janela._offset_y
+    janela.geometry(f"+{x}+{y}")
 
-header_frame.mousePressEvent = start_drag
-header_frame.mouseMoveEvent = do_drag
+header_frame.bind("<Button-1>", start_drag)
+header_frame.bind("<B1-Motion>", do_drag)
 
-# Set Layout Principal
-window.setLayout(main_layout)
+# Mensagem Inicial
+log_text.tag_config("success", foreground="#00ff00")
+log_text.insert(tk.END, "[🛰️ SISTEMA] ", "success")
+log_text.insert(tk.END, "Conectado aos servidores da Federação!\n")
 
-# Exibir Janela
-window.show()
-
-# Iniciar o Aplicativo
-sys.exit(app.exec())
+# Iniciar sistema
+iniciar_loop()
+janela.mainloop()
