@@ -35,6 +35,8 @@ verificacao_thread = None
 ultimo_undocked_ts = None
 processar_carga_em_execucao = False
 
+#  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
+
 # pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
 
 # Caminho padrão do log
@@ -224,51 +226,20 @@ def verificar_abandono_ou_morte(materiais):
                 tipo = evento.get("event")
                 ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
 
-                # Ignorar eventos antigos ou antes do undocked
+                # Evita eventos anteriores ao último undocked
                 if ultimo_undocked_ts and ts <= ultimo_undocked_ts:
                     continue
 
-                # Abandono manual (EjectCargo)
+                # Ejeção de carga não abandonada
                 if tipo == "EjectCargo":
                     nome = evento.get("Type_Localised") or evento.get("Type")
                     qtd = evento.get("Count", 0)
                     mat_id = gerar_id(nome)
-                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|eject"
+                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}"
 
                     if evento_id not in ultimos_abandonos:
                         ultimos_abandonos.add(evento_id)
                         abandono_para_firebase(nome, qtd)
-                
-                # Venda no mercado (MarketSell)
-                elif tipo == "MarketSell":
-                    nome = evento.get("Type_Localised") or evento.get("Type")
-                    qtd = evento.get("Count", 0)
-                    mat_id = gerar_id(nome)
-                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|marketsell"
-
-                    if evento_id not in ultimos_abandonos:
-                        ultimos_abandonos.add(evento_id)
-                        abandono_para_firebase(nome, qtd)
-                        log_text.insert(tk.END, f"💸 Venda detectada: {nome} x{qtd} (Revertido)\n")
-
-                # Transferência via porta-frotas
-                elif tipo == "CargoTransfer":
-                    for transf in evento.get("Transfers", []):
-                        direcao = transf.get("Direction")
-                        nome = transf.get("Type_Localised") or transf.get("Type")
-                        qtd = transf.get("Count", 0)
-                        mat_id = gerar_id(nome)
-                        evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|{direcao}"
-
-                        if evento_id in ultimos_abandonos:
-                            continue
-                        ultimos_abandonos.add(evento_id)
-
-                        if direcao == "tocarrier":
-                            abandono_para_firebase(nome, qtd)
-                        elif direcao == "toship":
-                            subtrair_do_firestore(nome, qtd)
-                            log_text.insert(tk.END, f"[💰] Transferência do porta-frotas detectada: {nome} x{qtd} (Comprado)\n")
 
                 # Morte
                 elif tipo == "Died" and not morte_processada:
@@ -277,14 +248,14 @@ def verificar_abandono_ou_morte(materiais):
                         abandono_para_firebase(mat["material"], mat["quantidade"])
                     log_text.insert(tk.END, f"♻️ {len(materiais)} materiais devolvidos após morte/abandono\n")
 
-                # Fim do monitoramento
+                # Parar monitoramento se atracar de novo
                 elif tipo == "Docked":
                     return
 
-            # Limpeza de eventos antigos (5min)
+            # Limpa eventos muito antigos do set para evitar crescimento
             ultimos_abandonos = {
                 eid for eid in ultimos_abandonos
-                if datetime.fromisoformat(eid.split("|")[2]) > datetime.utcnow() - timedelta(minutes=5)
+                if datetime.fromisoformat(eid.rsplit("|", 1)[-1]) > datetime.utcnow() - timedelta(minutes=5)
             }
 
         except Exception as e:
