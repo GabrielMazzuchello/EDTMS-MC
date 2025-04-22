@@ -202,9 +202,21 @@ def verificar_abandono_ou_morte(materiais):
 
     while True:
         try:
+            eventos = []
+            linhas_invalidas = 0
             with open(log_path, encoding="utf-8") as f:
-                linhas = f.readlines()
-            eventos = [json.loads(l) for l in linhas if l.strip().startswith('{')]
+                for l in f:
+                    l = l.strip()
+                    if not l:
+                        continue
+                    try:
+                        eventos.append(json.loads(l))
+                    except json.JSONDecodeError:
+                        linhas_invalidas += 1
+
+            if linhas_invalidas > 0:
+                log_text.insert(tk.END, f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)\n")
+
 
             for evento in eventos:
                 tipo = evento.get("event")
@@ -302,7 +314,18 @@ def processar_carga():
             with open(log_path, encoding="utf-8") as f:
                 linhas = f.readlines()
 
-            eventos = [json.loads(l) for l in linhas if l.strip().startswith('{')]
+            eventos = []
+            linhas_invalidas = 0
+            with open(log_path, encoding="utf-8") as f:
+                for l in f:
+                    l = l.strip()
+                    if not l:
+                        continue
+                    try:
+                        eventos.append(json.loads(l))
+                    except json.JSONDecodeError:
+                        linhas_invalidas += 1
+
             eventos = sorted(eventos, key=lambda e: e["timestamp"])  # Ordenar por tempo
 
             # ⚠️ Ignora eventos mais antigos que 60s para evitar leitura de logs antigos
