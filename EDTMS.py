@@ -5,17 +5,6 @@ import time
 import threading
 import webbrowser
 import unicodedata
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-import tkinter as tk
-from PIL import Image, ImageTk 
-from tkinter import messagebox, scrolledtext
-import firebase_admin
-from firebase_admin import credentials, firestore
-from pathlib import Path
-=======
-=======
->>>>>>> Stashed changes
 import firebase_admin
 from tkinter import ttk
 from pathlib import Path
@@ -28,12 +17,21 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QLineEdit, QPushButton,
     QComboBox, QPlainTextEdit, QVBoxLayout, QWidget, QMessageBox
 )
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
 
-#  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
+construcoes_cache = {}
+ultimo_cargo = []
+ultimo_cargo_timestamp = 0
+ultima_entrega_realizada = False
+ultima_morte_processada = None
+ultima_undocked_processada = None
+ultima_posicao_log = 0
+ultima_sessao_jogo = None
+leitura_carga_permitida = False
+ultimos_abandonos = set()  # ← Agora fora da função, persistente
+verificacao_em_andamento = False
+verificacao_thread = None
+ultimo_undocked_ts = None
+processar_carga_em_execucao = False
 
 # pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
 
@@ -479,11 +477,6 @@ def loop_verificacao():
 
         time.sleep(5)
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-=======
-=======
->>>>>>> Stashed changes
 # def normalizar_nome(nome):
 #     nome = nome.lower()
 #     substituicoes = {
@@ -505,271 +498,10 @@ def obter_materiais_da_construcao(nome_construcao):
     if not nome_construcao or not construcoes_cache.get(nome_construcao):
         return None
     return construcoes_cache[nome_construcao]["dados"]["items"]
->>>>>>> Stashed changes
 
 def iniciar_loop():
     threading.Thread(target=loop_verificacao, daemon=True).start()
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-# Interface Gráfica Tkinter - Design Atualizado
-janela = tk.Tk()
-janela.title("")
-janela.geometry("500x400")  # Altura um pouco maior
-janela.configure(bg="#1a1a1a")
-janela.overrideredirect(True)
-=======
-
-
->>>>>>> Stashed changes
-
-
-<<<<<<< Updated upstream
-# Frame Principal
-frame_principal = tk.Frame(janela, bg=COR_DE_FUNDO)
-frame_principal.pack(fill="both", expand=True, padx=20, pady=15)
-
-# --- Área do Cabeçalho (Arrastável) ---
-header_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
-header_frame.pack(side="top", fill="x", pady=(0, 15))
-
-# Título Centralizado
-cabecalho = tk.Label(
-    header_frame,
-    text="ELITE DANGEROUS CONSTRUCTION SYNC",
-    font=FONTE_TITULO,
-    fg=COR_DESTAQUE,
-    bg=COR_DE_FUNDO
-)
-cabecalho.pack(side="top", pady=(0, 5))
-=======
-class EDTMSWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("EDTMS")
-        self.setGeometry(100, 100, 450, 425)
-        
-        # Configuração da interface
-        self.setup_ui()
-        
-    def setup_ui(self):
-        # Widgets principais
-        self.uid_input = QLineEdit()
-        self.uid_input.setPlaceholderText("Digite seu UID")
-        self.construcoes_dropdown = QComboBox()  
-        self.log_box = QPlainTextEdit()
-        self.log_box.setReadOnly(True)
-
-        # Botão
-        carregar_btn = QPushButton("Carregar")
-        carregar_btn.clicked.connect(self.carregar_construcoes)
-
-        # Configuração da logo
-        self.setup_logo()
-
-        # Layout principal
-        layout = QVBoxLayout()
-        layout.addWidget(self.logo_label, alignment=Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.uid_input)
-        layout.addWidget(carregar_btn)
-        layout.addWidget(self.construcoes_dropdown)
-        layout.addWidget(self.log_box)
-
-        # Widget central
-        central_widget = QWidget()
-        central_widget.setLayout(layout)
-        self.setCentralWidget(central_widget)
-
-    def setup_logo(self):
-        """Configura a logo clicável"""
-        self.logo_label = QLabel()
-        
-        try:
-            pixmap = QPixmap("edtms_logo.png")
-            if pixmap.isNull():
-                raise FileNotFoundError
-                
-            # Redimensiona mantendo aspect ratio
-            self.logo_label.setPixmap(pixmap.scaled(
-                200, 60, 
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            ))
-
-            self.logo_label.setStyleSheet("""
-                QLabel {
-                    background-color: transparent;
-                    border-radius: 15px;
-                    border: 2px solid #FFA726;                      
-                }
-                QLabel:hover {
-                    border: 2px solid #F57C00;
-                    background-color: rgba(52, 152, 219, 0.1);
-                }
-            """)
-        except Exception:
-            # Fallback: cria uma logo simples se o arquivo não for encontrado
-            self.logo_label.setText("EDTMS Logo")
-            self.logo_label.setStyleSheet("""
-                QLabel {
-                    background-color: #2c3e50;
-                    color: white;
-                    font-weight: bold;
-                    font-size: 18px;
-                    padding: 10px;
-                    min-width: 200px;
-                    min-height: 60px;
-                    text-align: center;
-                }
-            """)
-        
-        # Tornar clicável
-        self.logo_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.logo_label.mousePressEvent = self.abrir_site_edtms
-
-    def abrir_site_edtms(self, event):
-        """Abre o site da EDTMS no navegador padrão"""
-        webbrowser.open("https://edtms.squareweb.app")
-
-    def carregar_construcoes(self):
-        uid = self.uid_input.text().strip()
-        if not uid:
-            QMessageBox.critical(self, "Erro", "Digite seu UID primeiro!")
-            return
-
-        try:
-            construcoes_ref = db.collection("inventories")
-            query = construcoes_ref.where("collaborators", "array_contains", uid).get()
->>>>>>> Stashed changes
-
-            construcoes = []
-            for doc in query:
-                data = doc.to_dict()
-                construcoes.append({
-                    "doc_id": doc.id,
-                    "nome": data.get("name", "Sem nome"),
-                    "dados": data
-                })
-
-            self.construcoes_dropdown.clear()
-            self.construcoes_dropdown.addItems([c["nome"] for c in construcoes])
-
-<<<<<<< Updated upstream
-try:
-    logo_path = get_resource_path("edtms_logo.png")
-    logo_img = Image.open(logo_path)
-    logo_img = logo_img.resize((200, 60), Image.LANCZOS)
-    logo_tk = ImageTk.PhotoImage(logo_img)
-    
-    # Cria um frame para o efeito de hover
-    logo_frame = tk.Frame(
-        header_frame,
-        bg=COR_DE_FUNDO,
-        highlightbackground=COR_DE_FUNDO,
-        highlightthickness=2
-    )
-    logo_frame.pack(pady=5)
-    
-    logo_label = tk.Label(
-        logo_frame,
-        image=logo_tk,
-        bg=COR_DE_FUNDO,
-        cursor="hand2"
-    )
-    logo_label.image = logo_tk
-    logo_label.pack()
-    
-    # Efeitos Interativos
-    def hover_enter(e):
-        logo_frame.config(highlightbackground=COR_DESTAQUE)
-        logo_label.config(bg="#252525")
-        
-    def hover_leave(e):
-        logo_frame.config(highlightbackground=COR_DE_FUNDO)
-        logo_label.config(bg=COR_DE_FUNDO)
-    
-    # Bind dos eventos
-    logo_label.bind("<Enter>", hover_enter)
-    logo_label.bind("<Leave>", hover_leave)
-    logo_label.bind("<Button-1>", abrir_site)
-    
-except Exception as e:
-    print(f"Erro ao carregar logo: {str(e)}")
-
-# --- Botão Fechar ---
-btn_fechar = tk.Label(
-    janela,
-    text="✕",
-    font=("Arial", 14),
-    fg=COR_TEXTO,
-    bg=COR_DE_FUNDO,
-    cursor="hand2"
-)
-btn_fechar.place(x=465, y=5)  # Posição ajustada
-btn_fechar.bind("<Button-1>", lambda e: janela.destroy())
-
-# --- Área de Log Estilizada ---
-log_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
-log_frame.pack(fill="both", expand=True)
-
-log_text = scrolledtext.ScrolledText(
-    log_frame,
-    wrap=tk.WORD,
-    width=60,
-    height=12,
-    bg="#2a2a2a",
-    fg=COR_TEXTO,
-    insertbackground=COR_DESTAQUE,
-    selectbackground=COR_DESTAQUE,
-    font=FONTE_TEXTO,
-    relief="flat",
-    highlightthickness=0
-)
-log_text.pack(fill="both", expand=True)
-
-# Personalização da Scrollbar
-log_text.vbar.config(
-    troughcolor="#2a2a2a",
-    bg="#404040",
-    activebackground=COR_DESTAQUE
-)
-
-# --- Barra de Status Premium ---
-status_bar = tk.Label(
-    janela,
-    text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.0",
-    bg=COR_DESTAQUE,
-    fg="#1a1a1a",
-    font=("Consolas", 9, "bold"),
-    height=2,
-    anchor="center",
-    padx=10
-)
-status_bar.pack(side="bottom", fill="x")
-
-# --- Sistema de Arraste ---
-def start_drag(event):
-    janela._offset_x = event.x
-    janela._offset_y = event.y
-
-def do_drag(event):
-    x = janela.winfo_pointerx() - janela._offset_x
-    y = janela.winfo_pointery() - janela._offset_y
-    janela.geometry(f"+{x}+{y}")
-
-# Permite arrastar por qualquer parte do cabeçalho
-header_frame.bind("<Button-1>", start_drag)
-header_frame.bind("<B1-Motion>", do_drag)
-
-# Mensagem Inicial
-log_text.tag_config("success", foreground="#00ff00")
-log_text.insert(tk.END, "[🛰️ SISTEMA] ", "success")
-log_text.insert(tk.END, "Conectado aos servidores da Federação!\n")
-
-iniciar_loop()
-janela.mainloop()
-=======
-=======
 
 
 
@@ -884,7 +616,6 @@ class EDTMSWindow(QMainWindow):
             self.construcoes_dropdown.clear()
             self.construcoes_dropdown.addItems([c["nome"] for c in construcoes])
 
->>>>>>> Stashed changes
             global construcoes_cache
             construcoes_cache = {c["nome"]: c for c in construcoes}
 
@@ -902,9 +633,4 @@ if __name__ == "__main__":
     window = EDTMSWindow()
     window.show()
     iniciar_loop()
-<<<<<<< Updated upstream
     sys.exit(app.exec())
->>>>>>> Stashed changes
-=======
-    sys.exit(app.exec())
->>>>>>> Stashed changes
