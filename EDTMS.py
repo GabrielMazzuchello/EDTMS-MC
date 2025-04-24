@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QLineEdit, QPushButton,
     QComboBox, QPlainTextEdit, QVBoxLayout, QWidget, QMessageBox
 )
+from PyQt6.QtGui import QTextOption
 
 construcoes_cache = {}
 ultimo_cargo = []
@@ -138,7 +139,7 @@ def atualizar_firestore(nome_estacao, materiais_script):
     docs = colecao.where("name", "==", nome_estacao).get()
 
     if not docs:
-        window.log_box.appendPlainText(f"Estação '{nome_estacao}' não encontrada no Firestore.")
+        log_ui(f"Estação '{nome_estacao}' não encontrada no Firestore.")
         return
 
     doc_ref = docs[0].reference
@@ -197,7 +198,7 @@ def atualizar_firestore(nome_estacao, materiais_script):
         "updatedAt": firestore.SERVER_TIMESTAMP
     })
 
-    window.log_box.appendPlainText(f"Estação '{nome_estacao}' sincronizada com {len(novos_itens)} materiais.")
+    log_ui(f"Estação '{nome_estacao}' sincronizada com {len(novos_itens)} materiais.")
     window.log_box.verticalScrollBar().setValue(window.log_box.verticalScrollBar().maximum())
 
 def verificar_abandono_ou_morte(materiais):
@@ -224,7 +225,7 @@ def verificar_abandono_ou_morte(materiais):
                         linhas_invalidas += 1
 
             if linhas_invalidas > 0:
-                window.log_box.appendPlainText(f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)")
+                log_ui(f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)")
 
 
             for evento in eventos:
@@ -256,7 +257,7 @@ def verificar_abandono_ou_morte(materiais):
                     if evento_id not in ultimos_abandonos:
                         ultimos_abandonos.add(evento_id)
                         abandono_para_firebase(nome, qtd)
-                        window.log_box.appendPlainText(f"💸 Venda detectada: {nome} x{qtd} (Revertido)")
+                        log_ui(f"💸 Venda detectada: {nome} x{qtd} (Revertido)")
 
                 # Transferência via porta-frotas
                 elif tipo == "CargoTransfer":
@@ -275,14 +276,14 @@ def verificar_abandono_ou_morte(materiais):
                             abandono_para_firebase(nome, qtd)
                         elif direcao == "toship":
                             subtrair_do_firestore(nome, qtd)
-                            window.log_box.appendPlainText(f"[💰] Transferência do porta-frotas detectada: {nome} x{qtd} (Comprado)")
+                            log_ui(f"[💰] Transferência do porta-frotas detectada: {nome} x{qtd} (Comprado)")
 
                 # Morte
                 elif tipo == "Died" and not morte_processada:
                     morte_processada = True
                     for mat in materiais:
                         abandono_para_firebase(mat["material"], mat["quantidade"])
-                    window.log_box.appendPlainText(f"♻️ {len(materiais)} materiais devolvidos após morte/abandono")
+                    log_ui(f"♻️ {len(materiais)} materiais devolvidos após morte/abandono")
 
                 # Fim do monitoramento
                 elif tipo == "Docked":
@@ -295,7 +296,7 @@ def verificar_abandono_ou_morte(materiais):
             }
 
         except Exception as e:
-            window.log_box.appendPlainText(f"[ERRO VERIFICAÇÃO] {str(e)}")
+            log_ui(f"[ERRO VERIFICAÇÃO] {str(e)}")
             import traceback
             traceback.print_exc()
 
@@ -310,10 +311,10 @@ def processar_carga():
 
     log_path = obter_log_mais_recente()
     if not log_path or not log_path.exists():
-        window.log_box.appendPlainText("[ERRO] Log não encontrado.")
+        log_ui("[ERRO] Log não encontrado.")
         return
 
-    window.log_box.appendPlainText("[🛰️] Monitorando log para eventos de compra e entrega...")
+    log_ui("[🛰️] Monitorando log para eventos de compra e entrega...")
 
     eventos_processados = set()
     materiais_entregues = []
@@ -354,7 +355,7 @@ def processar_carga():
                 # 1. Evento de DOCKED → ponto de compra
                 if tipo == "Docked":
                     ultima_entrega_realizada = False
-                    window.log_box.appendPlainText("[INFO] Atracado. Aguardando compras...")
+                    log_ui("[INFO] Atracado. Aguardando compras...")
                     eventos_processados.add(evento_id)
 
                 # 2. MARKETBUY (Compras na estação)
@@ -369,7 +370,7 @@ def processar_carga():
                             "material": nome,
                             "quantidade": qtd
                         })
-                        window.log_box.appendPlainText(f"[💰] Compra detectada: {nome} x{qtd}")
+                        log_ui(f"[💰] Compra detectada: {nome} x{qtd}")
                         subtrair_do_firestore(nome, qtd)  # 👈 subtrai diretamente após compra
                         eventos_processados.add(evento_id)
 
@@ -379,7 +380,7 @@ def processar_carga():
                     ts_undocked = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
                     if not ultimo_undocked_ts or ts_undocked > ultimo_undocked_ts:
                         ultimo_undocked_ts = ts_undocked
-                        window.log_box.appendPlainText("[🚀] Undocked detectado. Iniciando verificação de carga...")
+                        log_ui("[🚀] Undocked detectado. Iniciando verificação de carga...")
                         
                         def iniciar_verificacao():
                             global verificacao_em_andamento
@@ -396,7 +397,7 @@ def processar_carga():
                             materiais_entregues.clear()
                             eventos_processados.add(evento_id)
         except Exception as e:
-            window.log_box.appendPlainText(f"[ERRO] {str(e)}")
+            log_ui(f"[ERRO] {str(e)}")
             import traceback
             traceback.print_exc()
         time.sleep(1)
@@ -406,7 +407,7 @@ def processar_carga():
 def abandono_para_firebase(nome, qtd):
     construcao_nome = window.construcoes_dropdown.currentText()
     if not construcao_nome or construcao_nome not in construcoes_cache:
-        window.log_box.appendPlainText("⚠️ Nenhuma construção válida para reverter.")
+        log_ui("⚠️ Nenhuma construção válida para reverter.")
         return
 
     doc_ref = db.collection("inventories").document(construcoes_cache[construcao_nome]["doc_id"])
@@ -418,7 +419,7 @@ def abandono_para_firebase(nome, qtd):
     for mat in materiais:
         if gerar_id(mat["material"]) == gerar_id(nome):
             mat["restante"] += qtd
-            window.log_box.appendPlainText(f"↩ {mat['material']}: +{qtd} (Abandono)")
+            log_ui(f"↩ {mat['material']}: +{qtd} (Abandono)")
             break
 
     doc_ref.update({"items": materiais})
@@ -426,7 +427,7 @@ def abandono_para_firebase(nome, qtd):
 def subtrair_do_firestore(nome, qtd):
     construcao_nome = window.construcoes_dropdown.currentText()
     if not construcao_nome or construcao_nome not in construcoes_cache:
-        window.log_box.appendPlainText("⚠️ Nenhuma construção válida para subtrair.")
+        log_ui("⚠️ Nenhuma construção válida para subtrair.")
         return
 
     doc_ref = db.collection("inventories").document(construcoes_cache[construcao_nome]["doc_id"])
@@ -438,7 +439,7 @@ def subtrair_do_firestore(nome, qtd):
     for mat in materiais:
         if gerar_id(mat["material"]) == gerar_id(nome):
             novo_valor = max(0, mat["restante"] - qtd)
-            window.log_box.appendPlainText(f"✎ {mat['material']}: {mat['restante']} → {novo_valor} (Comprado)")
+            log_ui(f"✎ {mat['material']}: {mat['restante']} → {novo_valor} (Comprado)")
             mat["restante"] = novo_valor
             break
 
@@ -469,7 +470,7 @@ def loop_verificacao():
                     f.write(f"Docked em {nome_estacao} ({tipo_estacao})")
 
                 window.log_box.clear()
-                window.log_box.appendPlainText(f"[INFO] Atracado em: {nome_estacao} ({tipo_estacao})")
+                log_ui(f"[INFO] Atracado em: {nome_estacao} ({tipo_estacao})")
 
             if materiais:
                 # Verifica se houve mudança nos materiais antes de atualizar
@@ -480,17 +481,9 @@ def loop_verificacao():
 
         time.sleep(5)
 
-# def normalizar_nome(nome):
-#     nome = nome.lower()
-#     substituicoes = {
-#         'í': 'i', 'ó': 'o', 'ã': 'a', 'á': 'a', 
-#         'é': 'e', 'ê': 'e', 'ç': 'c', 'ú': 'u',
-#         'construction': '', 'materials': '', ' ': '_',
-#         '-': '', "'": "", ":": "", "(": "", ")": ""
-#     }
-#     for k, v in substituicoes.items():
-#         nome = nome.replace(k, v)
-#     return nome.rstrip('s').strip('_')
+def log_ui(texto):
+    window.log_box.appendPlainText(texto)
+    window.log_box.verticalScrollBar().setValue(window.log_box.verticalScrollBar().maximum())
 
 from datetime import datetime, timedelta
 
@@ -504,10 +497,6 @@ def obter_materiais_da_construcao(nome_construcao):
 
 def iniciar_loop():
     threading.Thread(target=loop_verificacao, daemon=True).start()
-
-
-
-
 
 class EDTMSWindow(QMainWindow):
     def __init__(self):
@@ -526,6 +515,11 @@ class EDTMSWindow(QMainWindow):
         self.construcoes_dropdown = QComboBox()  
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.setWordWrapMode(QTextOption.WrapMode(3)) # quebra a linha automaticamente (evita o corte das palavras ao meio)
+        self.log_box.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.log_box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        
 
         # Botão
         carregar_btn = QPushButton("Carregar")
@@ -546,6 +540,16 @@ class EDTMSWindow(QMainWindow):
         central_widget = QWidget()
         central_widget.setLayout(layout)
         self.setCentralWidget(central_widget)
+        
+
+        self.log_box.setStyleSheet("""
+            QPlainTextEdit {
+                font-family: Consolas, monospace;
+                font-size: 11px;
+                line-height: 1;
+                padding: 4px;
+            }
+        """)
 
     def setup_logo(self):
         """Configura a logo clicável"""
