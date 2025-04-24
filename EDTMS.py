@@ -33,7 +33,7 @@ verificacao_thread = None
 ultimo_undocked_ts = None
 processar_carga_em_execucao = False
 
-# pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
+# pyinstaller --onefile --windowed --icon=EDTMS.ico --add-data "EDTMS.ico;." --add-data "edtms_logo.png;." --add-data "serviceAccountKey.json;." EDTMS.py
 
 # Caminho padrão do log
 LOG_DIR = Path(os.environ["USERPROFILE"]) / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
@@ -42,9 +42,14 @@ LOG_DIR = Path(os.environ["USERPROFILE"]) / "Saved Games" / "Frontier Developmen
 def get_embedded_service_account():
     if hasattr(sys, "_MEIPASS"):  # PyInstaller executável
         path = os.path.join(sys._MEIPASS, "serviceAccountKey.json")
-    else:  # Rodando direto no Python
+    else:  # Rodando direto no Python'
         path = "serviceAccountKey.json"
     return credentials.Certificate(path)
+
+def get_resource_path(relative_path):
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 # Inicializa Firebase
 cred = get_embedded_service_account()
@@ -133,7 +138,7 @@ def atualizar_firestore(nome_estacao, materiais_script):
     docs = colecao.where("name", "==", nome_estacao).get()
 
     if not docs:
-        window.log_box.appendPlainText(f"Estação '{nome_estacao}' não encontrada no Firestore.\n")
+        window.log_box.appendPlainText(f"Estação '{nome_estacao}' não encontrada no Firestore.")
         return
 
     doc_ref = docs[0].reference
@@ -192,7 +197,7 @@ def atualizar_firestore(nome_estacao, materiais_script):
         "updatedAt": firestore.SERVER_TIMESTAMP
     })
 
-    window.log_box.appendPlainText(f"Estação '{nome_estacao}' sincronizada com {len(novos_itens)} materiais.\n")
+    window.log_box.appendPlainText(f"Estação '{nome_estacao}' sincronizada com {len(novos_itens)} materiais.")
     window.log_box.verticalScrollBar().setValue(window.log_box.verticalScrollBar().maximum())
 
 def verificar_abandono_ou_morte(materiais):
@@ -219,7 +224,7 @@ def verificar_abandono_ou_morte(materiais):
                         linhas_invalidas += 1
 
             if linhas_invalidas > 0:
-                window.log_box.appendPlainText(f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)\n")
+                window.log_box.appendPlainText(f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)")
 
 
             for evento in eventos:
@@ -251,7 +256,7 @@ def verificar_abandono_ou_morte(materiais):
                     if evento_id not in ultimos_abandonos:
                         ultimos_abandonos.add(evento_id)
                         abandono_para_firebase(nome, qtd)
-                        window.log_box.appendPlainText(f"💸 Venda detectada: {nome} x{qtd} (Revertido)\n")
+                        window.log_box.appendPlainText(f"💸 Venda detectada: {nome} x{qtd} (Revertido)")
 
                 # Transferência via porta-frotas
                 elif tipo == "CargoTransfer":
@@ -270,14 +275,14 @@ def verificar_abandono_ou_morte(materiais):
                             abandono_para_firebase(nome, qtd)
                         elif direcao == "toship":
                             subtrair_do_firestore(nome, qtd)
-                            window.log_box.appendPlainText(f"[💰] Transferência do porta-frotas detectada: {nome} x{qtd} (Comprado)\n")
+                            window.log_box.appendPlainText(f"[💰] Transferência do porta-frotas detectada: {nome} x{qtd} (Comprado)")
 
                 # Morte
                 elif tipo == "Died" and not morte_processada:
                     morte_processada = True
                     for mat in materiais:
                         abandono_para_firebase(mat["material"], mat["quantidade"])
-                    window.log_box.appendPlainText(f"♻️ {len(materiais)} materiais devolvidos após morte/abandono\n")
+                    window.log_box.appendPlainText(f"♻️ {len(materiais)} materiais devolvidos após morte/abandono")
 
                 # Fim do monitoramento
                 elif tipo == "Docked":
@@ -290,7 +295,7 @@ def verificar_abandono_ou_morte(materiais):
             }
 
         except Exception as e:
-            window.log_box.appendPlainText(f"[ERRO VERIFICAÇÃO] {str(e)}\n")
+            window.log_box.appendPlainText(f"[ERRO VERIFICAÇÃO] {str(e)}")
             import traceback
             traceback.print_exc()
 
@@ -305,10 +310,10 @@ def processar_carga():
 
     log_path = obter_log_mais_recente()
     if not log_path or not log_path.exists():
-        window.log_box.appendPlainText("[ERRO] Log não encontrado.\n")
+        window.log_box.appendPlainText("[ERRO] Log não encontrado.")
         return
 
-    window.log_box.appendPlainText("[🛰️] Monitorando log para eventos de compra e entrega...\n")
+    window.log_box.appendPlainText("[🛰️] Monitorando log para eventos de compra e entrega...")
 
     eventos_processados = set()
     materiais_entregues = []
@@ -349,7 +354,7 @@ def processar_carga():
                 # 1. Evento de DOCKED → ponto de compra
                 if tipo == "Docked":
                     ultima_entrega_realizada = False
-                    window.log_box.appendPlainText("[INFO] Atracado. Aguardando compras...\n")
+                    window.log_box.appendPlainText("[INFO] Atracado. Aguardando compras...")
                     eventos_processados.add(evento_id)
 
                 # 2. MARKETBUY (Compras na estação)
@@ -364,7 +369,7 @@ def processar_carga():
                             "material": nome,
                             "quantidade": qtd
                         })
-                        window.log_box.appendPlainText(f"[💰] Compra detectada: {nome} x{qtd}\n")
+                        window.log_box.appendPlainText(f"[💰] Compra detectada: {nome} x{qtd}")
                         subtrair_do_firestore(nome, qtd)  # 👈 subtrai diretamente após compra
                         eventos_processados.add(evento_id)
 
@@ -374,7 +379,7 @@ def processar_carga():
                     ts_undocked = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
                     if not ultimo_undocked_ts or ts_undocked > ultimo_undocked_ts:
                         ultimo_undocked_ts = ts_undocked
-                        window.log_box.appendPlainText("[🚀] Undocked detectado. Iniciando verificação de carga...\n")
+                        window.log_box.appendPlainText("[🚀] Undocked detectado. Iniciando verificação de carga...")
                         
                         def iniciar_verificacao():
                             global verificacao_em_andamento
@@ -391,7 +396,7 @@ def processar_carga():
                             materiais_entregues.clear()
                             eventos_processados.add(evento_id)
         except Exception as e:
-            window.log_box.appendPlainText(f"[ERRO] {str(e)}\n")
+            window.log_box.appendPlainText(f"[ERRO] {str(e)}")
             import traceback
             traceback.print_exc()
         time.sleep(1)
@@ -461,10 +466,10 @@ def loop_verificacao():
                 ultimo_estado_materiais = {}  # Zera o estado quando troca de estação
 
                 with open(ultimo_dock_log, "w", encoding="utf-8") as f:
-                    f.write(f"Docked em {nome_estacao} ({tipo_estacao})\n")
+                    f.write(f"Docked em {nome_estacao} ({tipo_estacao})")
 
                 window.log_box.clear()
-                window.log_box.appendPlainText(f"[INFO] Atracado em: {nome_estacao} ({tipo_estacao})\n")
+                window.log_box.appendPlainText(f"[INFO] Atracado em: {nome_estacao} ({tipo_estacao})")
 
             if materiais:
                 # Verifica se houve mudança nos materiais antes de atualizar
@@ -508,7 +513,7 @@ class EDTMSWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EDTMS")
-        self.setWindowIcon(QIcon("EDTMS.ico"))
+        self.setWindowIcon(QIcon(get_resource_path("EDTMS.ico")))
         self.setGeometry(100, 100, 450, 425)
         
         # Configuração da interface
@@ -547,7 +552,7 @@ class EDTMSWindow(QMainWindow):
         self.logo_label = QLabel()
         
         try:
-            pixmap = QPixmap("edtms_logo.png")
+            pixmap = QPixmap(get_resource_path("edtms_logo.png"))
             if pixmap.isNull():
                 raise FileNotFoundError
                 
