@@ -195,8 +195,6 @@ def atualizar_firestore(nome_estacao, materiais_script):
     window.log_box.appendPlainText(f"Estação '{nome_estacao}' sincronizada com {len(novos_itens)} materiais.\n")
     window.log_box.verticalScrollBar().setValue(window.log_box.verticalScrollBar().maximum())
 
-<<<<<<< Updated upstream
-=======
 def verificar_abandono_ou_morte(materiais):
     global ultima_morte_detectada, ultimos_abandonos, ultimo_undocked_ts
 
@@ -440,9 +438,6 @@ def subtrair_do_firestore(nome, qtd):
             break
 
     doc_ref.update({"items": materiais})
-
-
->>>>>>> Stashed changes
 
 def loop_verificacao():
     ultimo_dock_log = "dock_status.txt"
