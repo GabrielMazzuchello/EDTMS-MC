@@ -12,7 +12,7 @@ from PIL import Image, ImageTk
 from datetime import datetime, timedelta
 from firebase_admin import credentials, firestore
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap, QCursor
+from PyQt6.QtGui import QPixmap, QCursor, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QLineEdit, QPushButton,
     QComboBox, QPlainTextEdit, QVBoxLayout, QWidget, QMessageBox
@@ -450,6 +450,9 @@ def loop_verificacao():
             time.sleep(5)
             continue
 
+        if not processar_carga_em_execucao:
+            threading.Thread(target=processar_carga, daemon=True).start()
+
         nome_estacao, tipo_estacao, materiais = processar_log(log_path)
 
         if nome_estacao:
@@ -505,6 +508,7 @@ class EDTMSWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EDTMS")
+        self.setWindowIcon(QIcon("EDTMS.ico"))
         self.setGeometry(100, 100, 450, 425)
         
         # Configuração da interface
@@ -615,6 +619,7 @@ class EDTMSWindow(QMainWindow):
             construcoes_cache = {c["nome"]: c for c in construcoes}
 
             self.log_box.appendPlainText(f"Carregadas {len(construcoes)} construções")
+            threading.Thread(target=processar_carga, daemon=True).start()
 
         except Exception as e:
             self.log_box.appendPlainText(f"Erro ao carregar: {str(e)}")
