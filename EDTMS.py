@@ -6,6 +6,7 @@ import threading
 import webbrowser
 import unicodedata
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 import tkinter as tk
 from PIL import Image, ImageTk 
 from tkinter import messagebox, scrolledtext
@@ -13,6 +14,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from pathlib import Path
 =======
+=======
+>>>>>>> Stashed changes
 import firebase_admin
 from tkinter import ttk
 from pathlib import Path
@@ -25,6 +28,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QLineEdit, QPushButton,
     QComboBox, QPlainTextEdit, QVBoxLayout, QWidget, QMessageBox
 )
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 
 #  pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." EDTMS.py
@@ -474,7 +480,10 @@ def loop_verificacao():
         time.sleep(5)
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 =======
+=======
+>>>>>>> Stashed changes
 # def normalizar_nome(nome):
 #     nome = nome.lower()
 #     substituicoes = {
@@ -501,6 +510,7 @@ def obter_materiais_da_construcao(nome_construcao):
 def iniciar_loop():
     threading.Thread(target=loop_verificacao, daemon=True).start()
 
+<<<<<<< Updated upstream
 <<<<<<< Updated upstream
 # Interface Gráfica Tkinter - Design Atualizado
 janela = tk.Tk()
@@ -759,6 +769,122 @@ log_text.insert(tk.END, "Conectado aos servidores da Federação!\n")
 iniciar_loop()
 janela.mainloop()
 =======
+=======
+
+
+
+
+class EDTMSWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("EDTMS")
+        self.setGeometry(100, 100, 450, 425)
+        
+        # Configuração da interface
+        self.setup_ui()
+        
+    def setup_ui(self):
+        # Widgets principais
+        self.uid_input = QLineEdit()
+        self.uid_input.setPlaceholderText("Digite seu UID")
+        self.construcoes_dropdown = QComboBox()  
+        self.log_box = QPlainTextEdit()
+        self.log_box.setReadOnly(True)
+
+        # Botão
+        carregar_btn = QPushButton("Carregar")
+        carregar_btn.clicked.connect(self.carregar_construcoes)
+
+        # Configuração da logo
+        self.setup_logo()
+
+        # Layout principal
+        layout = QVBoxLayout()
+        layout.addWidget(self.logo_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.uid_input)
+        layout.addWidget(carregar_btn)
+        layout.addWidget(self.construcoes_dropdown)
+        layout.addWidget(self.log_box)
+
+        # Widget central
+        central_widget = QWidget()
+        central_widget.setLayout(layout)
+        self.setCentralWidget(central_widget)
+
+    def setup_logo(self):
+        """Configura a logo clicável"""
+        self.logo_label = QLabel()
+        
+        try:
+            pixmap = QPixmap("edtms_logo.png")
+            if pixmap.isNull():
+                raise FileNotFoundError
+                
+            # Redimensiona mantendo aspect ratio
+            self.logo_label.setPixmap(pixmap.scaled(
+                200, 60, 
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            ))
+
+            self.logo_label.setStyleSheet("""
+                QLabel {
+                    background-color: transparent;
+                    border-radius: 15px;
+                    border: 2px solid #FFA726;                      
+                }
+                QLabel:hover {
+                    border: 2px solid #F57C00;
+                    background-color: rgba(52, 152, 219, 0.1);
+                }
+            """)
+        except Exception:
+            # Fallback: cria uma logo simples se o arquivo não for encontrado
+            self.logo_label.setText("EDTMS Logo")
+            self.logo_label.setStyleSheet("""
+                QLabel {
+                    background-color: #2c3e50;
+                    color: white;
+                    font-weight: bold;
+                    font-size: 18px;
+                    padding: 10px;
+                    min-width: 200px;
+                    min-height: 60px;
+                    text-align: center;
+                }
+            """)
+        
+        # Tornar clicável
+        self.logo_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.logo_label.mousePressEvent = self.abrir_site_edtms
+
+    def abrir_site_edtms(self, event):
+        """Abre o site da EDTMS no navegador padrão"""
+        webbrowser.open("https://edtms.squareweb.app")
+
+    def carregar_construcoes(self):
+        uid = self.uid_input.text().strip()
+        if not uid:
+            QMessageBox.critical(self, "Erro", "Digite seu UID primeiro!")
+            return
+
+        try:
+            construcoes_ref = db.collection("inventories")
+            query = construcoes_ref.where("collaborators", "array_contains", uid).get()
+
+            construcoes = []
+            for doc in query:
+                data = doc.to_dict()
+                construcoes.append({
+                    "doc_id": doc.id,
+                    "nome": data.get("name", "Sem nome"),
+                    "dados": data
+                })
+
+            self.construcoes_dropdown.clear()
+            self.construcoes_dropdown.addItems([c["nome"] for c in construcoes])
+
+>>>>>>> Stashed changes
             global construcoes_cache
             construcoes_cache = {c["nome"]: c for c in construcoes}
 
@@ -776,5 +902,9 @@ if __name__ == "__main__":
     window = EDTMSWindow()
     window.show()
     iniciar_loop()
+<<<<<<< Updated upstream
+    sys.exit(app.exec())
+>>>>>>> Stashed changes
+=======
     sys.exit(app.exec())
 >>>>>>> Stashed changes
