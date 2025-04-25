@@ -75,8 +75,6 @@ def limpar_nome_estacao(nome_completo):
             return nome_completo.replace(prefixo, "").strip()
     return nome_completo.strip()
 
-
-
 def gerar_id(nome):
     nome_normalized = unicodedata.normalize('NFKD', nome)
     nome_sem_acentos = ''.join([c for c in nome_normalized if not unicodedata.combining(c)])
@@ -403,7 +401,6 @@ def processar_carga():
         time.sleep(1)
     processar_carga_em_execucao = False # coloquei para dentro do while TAB remover se der algum problema (removi e funcionou)
 
-
 def abandono_para_firebase(nome, qtd):
     construcao_nome = window.construcoes_dropdown.currentText()
     if not construcao_nome or construcao_nome not in construcoes_cache:
@@ -482,8 +479,12 @@ def loop_verificacao():
         time.sleep(5)
 
 def log_ui(texto):
-    window.log_box.appendPlainText(texto)
-    window.log_box.verticalScrollBar().setValue(window.log_box.verticalScrollBar().maximum())
+    try:
+        if window and window.log_box:
+            window.log_box.appendPlainText(texto.strip())
+            window.log_box.verticalScrollBar().setValue(window.log_box.verticalScrollBar().maximum())
+    except Exception as e:
+        print(f"[FALHA LOG UI] {texto} -> {e}")
 
 from datetime import datetime, timedelta
 
@@ -519,8 +520,6 @@ class EDTMSWindow(QMainWindow):
         self.log_box.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.log_box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        
-
         # Botão
         carregar_btn = QPushButton("Carregar")
         carregar_btn.clicked.connect(self.carregar_construcoes)
@@ -541,7 +540,6 @@ class EDTMSWindow(QMainWindow):
         central_widget.setLayout(layout)
         self.setCentralWidget(central_widget)
         
-
         self.log_box.setStyleSheet("""
             QPlainTextEdit {
                 font-family: Consolas, monospace;
@@ -628,18 +626,25 @@ class EDTMSWindow(QMainWindow):
             construcoes_cache = {c["nome"]: c for c in construcoes}
 
             self.log_box.appendPlainText(f"Carregadas {len(construcoes)} construções")
-            threading.Thread(target=processar_carga, daemon=True).start()
 
         except Exception as e:
             self.log_box.appendPlainText(f"Erro ao carregar: {str(e)}")
     
 
 def iniciar_loop():
-    threading.Thread(target=loop_verificacao, daemon=True).start()
+    try:
+        threading.Thread(target=loop_verificacao, daemon=True).start()
+    except Exception as e:
+        log_ui(f"[ERRO LOOP] {e}")
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = EDTMSWindow()
-    window.show()
-    iniciar_loop()
-    sys.exit(app.exec())
+    try:
+        app = QApplication(sys.argv)
+        window = EDTMSWindow()
+        window.show()
+        iniciar_loop()
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"[FATAL] {e}")
+        import traceback
+        traceback.print_exc()
