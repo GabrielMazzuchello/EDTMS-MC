@@ -837,7 +837,7 @@ log_text.vbar.config(
 # Barra de Status
 status_bar = tk.Label(
     janela,
-    text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.0",
+    text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.1",
     bg=COR_DESTAQUE,
     fg="#1a1a1a",
     font=("Consolas", 10, "bold"),
