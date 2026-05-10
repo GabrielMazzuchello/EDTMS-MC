@@ -226,8 +226,8 @@ def processar_carga():
     except Exception:
         ultima_posicao_log = 0
 
-    def adicionar_inventario(nome, qtd):
-        if not nome or qtd <= 0:
+    def adicionar_inventario(nome, qtd, excedente=0):
+        if not nome or qtd <= 0 and excedente <= 0:
             return
 
         mat_id = gerar_id(nome)
@@ -235,45 +235,120 @@ def processar_carga():
         if mat_id not in inventario_atual:
             inventario_atual[mat_id] = {
                 "material": nome,
-                "quantidade": 0
+                "quantidade": 0,
+                "excedente": 0
             }
 
         inventario_atual[mat_id]["quantidade"] += qtd
+        inventario_atual[mat_id]["excedente"] += excedente
 
     def remover_inventario(nome, qtd):
         if not nome or qtd <= 0:
-            return
+            return 0, 0
 
         mat_id = gerar_id(nome)
 
         if mat_id not in inventario_atual:
-            return
+            return 0, qtd
 
-        inventario_atual[mat_id]["quantidade"] = max(
-            0,
-            inventario_atual[mat_id]["quantidade"] - qtd
-        )
+        item = inventario_atual[mat_id]
 
-        if inventario_atual[mat_id]["quantidade"] <= 0:
+        excedente_atual = item.get("excedente", 0)
+        valido_atual = item.get("quantidade", 0)
+
+        # Remove primeiro do excedente, porque excedente NÃO deve voltar ao site
+        removido_excedente = min(qtd, excedente_atual)
+        restante_para_remover = qtd - removido_excedente
+
+        # Só o que sair da quantidade válida deve voltar ao Firebase
+        removido_valido = min(restante_para_remover, valido_atual)
+
+        item["excedente"] = excedente_atual - removido_excedente
+        item["quantidade"] = valido_atual - removido_valido
+
+        if item["quantidade"] <= 0 and item["excedente"] <= 0:
             del inventario_atual[mat_id]
+
+        return removido_valido, removido_excedente
 
     def mostrar_inventario():
         if not inventario_atual:
-            log_text.insert(tk.END, "\n[📦] Carga atual: vazia\n\n")
+            log_text.insert(tk.END, "[📦] Carga atual: vazia\n")
             return
 
-        log_text.insert(tk.END, "\n==============================\n")
-        log_text.insert(tk.END, "        📦 CARGA ATUAL\n")
-        log_text.insert(tk.END, "==============================\n")
+        log_text.insert(tk.END, "\n[📦] Carga atual:\n")
 
         for item in inventario_atual.values():
-            log_text.insert(
-                tk.END,
-                f"• {item['material']:<25} x{item['quantidade']}\n"
-            )
+            material = item["material"]
+            qtd = item.get("quantidade", 0)
+            excedente = item.get("excedente", 0)
 
-        log_text.insert(tk.END, "==============================\n\n")
+            if excedente > 0:
+                log_text.insert(
+                    tk.END,
+                    f"   • {material} x{qtd} | excedente x{excedente}\n"
+                )
+            else:
+                log_text.insert(
+                    tk.END,
+                    f"   • {material} x{qtd}\n"
+                )
+
+        log_text.insert(tk.END, "\n")
         log_text.see(tk.END)
+
+    def comprar_material_controlado(nome, qtd):
+        construcao_nome = construcoes_var.get()
+
+        if not construcao_nome or construcao_nome not in construcoes_cache:
+            log_text.insert(tk.END, "⚠️ Nenhuma construção válida selecionada.\n")
+            return 0, qtd
+
+        doc_ref = db.collection("inventories").document(construcoes_cache[construcao_nome]["doc_id"])
+        doc = doc_ref.get()
+
+        if not doc.exists:
+            log_text.insert(tk.END, "⚠️ Construção não encontrada no Firestore.\n")
+            return 0, qtd
+
+        materiais = doc.to_dict().get("items", [])
+
+        for mat in materiais:
+            if gerar_id(mat["material"]) == gerar_id(nome):
+                restante = mat.get("restante", 0)
+
+                if restante <= 0:
+                    log_text.insert(
+                        tk.END,
+                        f"[EXCEDENTE] {nome} já está zerado no site. Compra ignorada: x{qtd}\n",
+                        "erro"
+                    )
+                    log_text.tag_config("erro", foreground="#ff4444")
+                    return 0, qtd
+
+                qtd_valida = min(qtd, restante)
+                qtd_excedente = max(0, qtd - restante)
+
+                mat["restante"] = max(0, restante - qtd_valida)
+                doc_ref.update({"items": materiais})
+
+                if qtd_excedente > 0:
+                    log_text.insert(
+                        tk.END,
+                        f"[EXCEDENTE] {nome}: comprou x{qtd}, mas só precisava de x{qtd_valida}. Ignorado: x{qtd_excedente}\n",
+                        "erro"
+                    )
+                    log_text.tag_config("erro", foreground="#ff4444")
+
+                return qtd_valida, qtd_excedente
+
+        log_text.insert(
+            tk.END,
+            f"[EXCEDENTE] {nome} não existe nessa construção. Compra ignorada: x{qtd}\n",
+            "erro"
+        )
+        log_text.tag_config("erro", foreground="#ff4444")
+        return 0, qtd
 
     while True:
         try:
@@ -333,10 +408,15 @@ def processar_carga():
                     qtd = evento.get("Count", 0)
 
                     if nome and qtd:
-                        adicionar_inventario(nome, qtd)
-                        subtrair_do_firestore(nome, qtd)
+                        qtd_valida, qtd_excedente = comprar_material_controlado(nome, qtd)
 
-                        log_text.insert(tk.END, f"[💰] Compra detectada: {nome} x{qtd}\n")
+                        adicionar_inventario(nome, qtd_valida, qtd_excedente)
+
+                        log_text.insert(
+                            tk.END,
+                            f"[💰] Compra detectada: {nome} x{qtd} | válido: x{qtd_valida} | excedente: x{qtd_excedente}\n"
+                        )
+
                         mostrar_inventario()
 
                     eventos_processados.add(evento_id)
@@ -347,10 +427,15 @@ def processar_carga():
                     qtd = evento.get("Count", 0)
 
                     if nome and qtd:
-                        abandono_para_firebase(nome, qtd)
-                        remover_inventario(nome, qtd)
+                        qtd_valida, qtd_excedente = remover_inventario(nome, qtd)
 
-                        log_text.insert(tk.END, f"[💸] Venda detectada: {nome} x{qtd} (Revertido)\n")
+                        if qtd_valida > 0:
+                            abandono_para_firebase(nome, qtd_valida)
+
+                        log_text.insert(
+                            tk.END,
+                            f"[💸] Venda detectada: {nome} x{qtd} | revertido: x{qtd_valida} | excedente ignorado: x{qtd_excedente}\n"
+                        )
                         mostrar_inventario()
 
                     eventos_processados.add(evento_id)
@@ -361,10 +446,15 @@ def processar_carga():
                     qtd = evento.get("Count", 0)
 
                     if nome and qtd:
-                        abandono_para_firebase(nome, qtd)
-                        remover_inventario(nome, qtd)
+                        qtd_valida, qtd_excedente = remover_inventario(nome, qtd)
 
-                        log_text.insert(tk.END, f"[⚠️] Carga abandonada: {nome} x{qtd} (Revertido)\n")
+                        if qtd_valida > 0:
+                            abandono_para_firebase(nome, qtd_valida)
+
+                        log_text.insert(
+                            tk.END,
+                            f"[⚠️] Carga abandonada: {nome} x{qtd} | revertido: x{qtd_valida} | excedente ignorado: x{qtd_excedente}\n"
+                        )
                         mostrar_inventario()
 
                     eventos_processados.add(evento_id)
@@ -380,12 +470,14 @@ def processar_carga():
                             continue
 
                         if direcao == "tocarrier":
-                            abandono_para_firebase(nome, qtd)
-                            remover_inventario(nome, qtd)
+                            qtd_valida, qtd_excedente = remover_inventario(nome, qtd)
+
+                            if qtd_valida > 0:
+                                abandono_para_firebase(nome, qtd_valida)
 
                             log_text.insert(
                                 tk.END,
-                                f"[🚚] Transferido para o porta-frotas: {nome} x{qtd} (Revertido)\n"
+                                f"[🚚] Transferido para o porta-frotas: {nome} x{qtd} | revertido: x{qtd_valida} | excedente ignorado: x{qtd_excedente}\n"
                             )
 
                         elif direcao == "toship":
