@@ -699,14 +699,20 @@ def obter_materiais_da_construcao(nome_construcao):
 def iniciar_loop():
     threading.Thread(target=loop_verificacao, daemon=True).start()
 
-
+def get_resource_path(relative_path):
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 # Interface Gráfica Tkinter - Design Atualizado
 janela = tk.Tk()
-janela.title("")
-janela.geometry("500x400")
+janela.iconbitmap(get_resource_path("EDTMS.ico"))
+janela.title("EDTMS")
+janela.geometry("620x620")
+janela.minsize(560, 500)
+janela.resizable(True, True)
 janela.configure(bg="#1a1a1a")
-janela.overrideredirect(True)
+janela.overrideredirect(False)
 
 # Cores e Fontes
 COR_DE_FUNDO = "#1a1a1a"
@@ -718,10 +724,26 @@ FONTE_TEXTO = ("Arial", 9)
 # Estilo ttk para bordas arredondadas nos botões
 style = ttk.Style()
 style.theme_use("default")
-style.configure("Rounded.TButton", padding=6, relief="flat", background=COR_DESTAQUE, foreground="#1a1a1a", font=("Arial", 9, "bold"))
-style.map("Rounded.TButton",
-    background=[("active", "#ffaa33")],
-    foreground=[("disabled", "#888888")]
+style.configure(
+    "Rounded.TButton",
+    padding=(12, 8),
+    relief="flat",
+    background=COR_DESTAQUE,
+    foreground="#1a1a1a",
+    font=("Arial", 9, "bold"),
+    borderwidth=0
+)
+
+style.map(
+    "Rounded.TButton",
+    background=[
+        ("active", "#ffaa33"),
+        ("pressed", "#cc7a00"),
+        ("disabled", "#555555")
+    ],
+    foreground=[
+        ("disabled", "#999999")
+    ]
 )
 
 # Frame Principal
@@ -733,28 +755,29 @@ top_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
 top_frame.pack(fill="x", pady=(0, 5))
 
 tk.Label(top_frame, text="UID:", bg=COR_DE_FUNDO, fg=COR_TEXTO).grid(row=0, column=0, sticky="w", padx=5)
-uid_entry = tk.Entry(top_frame, bg="#2a2a2a", fg=COR_TEXTO, width=25)
+uid_entry = tk.Entry(
+    top_frame,
+    bg="#2a2a2a",
+    fg=COR_TEXTO,
+    insertbackground=COR_DESTAQUE,
+    width=32,
+    relief="flat",
+    font=("Consolas", 10)
+)
 uid_entry.grid(row=0, column=1, sticky="ew", padx=5)
 
 load_btn = ttk.Button(top_frame, text="Carregar", style="Rounded.TButton", command=carregar_construcoes)
 load_btn.grid(row=0, column=2, padx=(5, 0))
 
-# Botão Fechar ao lado do "Carregar"
-btn_fechar = tk.Label(
-    top_frame,
-    text="✕",
-    font=("Arial", 12),
-    fg=COR_TEXTO,
-    bg=COR_DE_FUNDO,
-    cursor="hand2"
-)
-btn_fechar.grid(row=0, column=3, padx=(10, 5))
-btn_fechar.bind("<Button-1>", lambda e: janela.destroy())
-
 # Dropdown de Construções
 tk.Label(top_frame, text="Construção:", bg=COR_DE_FUNDO, fg=COR_TEXTO).grid(row=1, column=0, sticky="w", padx=5, pady=(5, 0))
 construcoes_var = tk.StringVar()
-construcoes_dropdown = ttk.Combobox(top_frame, textvariable=construcoes_var, state="readonly", width=32)
+construcoes_dropdown = ttk.Combobox(
+    top_frame,
+    textvariable=construcoes_var,
+    state="readonly",
+    width=40
+)
 construcoes_dropdown.grid(row=1, column=1, columnspan=3, sticky="ew", padx=5, pady=(5, 0))
 
 top_frame.grid_columnconfigure(1, weight=1)
@@ -771,11 +794,6 @@ cabecalho = tk.Label(
     bg=COR_DE_FUNDO
 )
 cabecalho.pack(side="top", pady=(0, 5))
-
-def get_resource_path(relative_path):
-    if hasattr(sys, "_MEIPASS"):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
 
 def abrir_site(event):
     webbrowser.open("https://edtms.squareweb.app")
@@ -809,6 +827,18 @@ try:
 except Exception as e:
     print(f"Erro ao carregar logo: {str(e)}")
 
+# cor da barra lateral no windows 11
+import ctypes
+HWND = ctypes.windll.user32.GetParent(janela.winfo_id())
+DWMWA_BORDER_COLOR = 34
+
+ctypes.windll.dwmapi.DwmSetWindowAttribute(
+    HWND,
+    DWMWA_BORDER_COLOR,
+    ctypes.byref(ctypes.c_int(0x00222222)),
+    ctypes.sizeof(ctypes.c_int)
+)
+
 # Área de Log
 log_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
 log_frame.pack(fill="both", expand=True)
@@ -816,15 +846,19 @@ log_frame.pack(fill="both", expand=True)
 log_text = scrolledtext.ScrolledText(
     log_frame,
     wrap=tk.WORD,
-    width=60,
-    height=10,
-    bg="#2a2a2a",
+    width=70,
+    height=18,
+    bg="#101010",
     fg=COR_TEXTO,
     insertbackground=COR_DESTAQUE,
     selectbackground=COR_DESTAQUE,
-    font=FONTE_TEXTO,
+    font=("Consolas", 9),
     relief="flat",
-    highlightthickness=0
+    padx=10,
+    pady=10,
+    highlightthickness=1,
+    highlightbackground="#333333",
+    highlightcolor=COR_DESTAQUE
 )
 log_text.pack(fill="both", expand=True)
 
@@ -857,8 +891,22 @@ def do_drag(event):
     y = janela.winfo_pointery() - janela._offset_y
     janela.geometry(f"+{x}+{y}")
 
+def aplicar_arraste(widget):
+    widget.bind("<Button-1>", start_drag)
+    widget.bind("<B1-Motion>", do_drag)
+
 header_frame.bind("<Button-1>", start_drag)
 header_frame.bind("<B1-Motion>", do_drag)
+
+aplicar_arraste(frame_principal)
+aplicar_arraste(header_frame)
+aplicar_arraste(cabecalho)
+
+try:
+    aplicar_arraste(logo_frame)
+    aplicar_arraste(logo_label)
+except:
+    pass
 
 # Mensagem Inicial
 log_text.tag_config("success", foreground="#00ff00")
