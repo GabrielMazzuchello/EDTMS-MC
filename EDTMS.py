@@ -18,7 +18,6 @@ construcoes_cache = {}
 ultimo_cargo = []
 ultimo_cargo_timestamp = 0
 ultima_entrega_realizada = False
-ultima_morte_processada = None
 ultima_undocked_processada = None
 ultima_posicao_log = 0
 ultima_sessao_jogo = None
@@ -28,8 +27,9 @@ verificacao_em_andamento = False
 verificacao_thread = None
 ultimo_undocked_ts = None
 processar_carga_em_execucao = False
+processar_carga_thread = None
 
-# pyinstaller --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
+# 
 
 # Caminho padrão do log
 LOG_DIR = Path(os.environ["USERPROFILE"]) / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
@@ -191,208 +191,284 @@ def atualizar_firestore(nome_estacao, materiais_script):
     log_text.insert(tk.END, f"Estação '{nome_estacao}' sincronizada com {len(novos_itens)} materiais.\n")
     log_text.see(tk.END)
 
-def verificar_abandono_ou_morte(materiais):
-    global ultima_morte_detectada, ultimos_abandonos, ultimo_undocked_ts
-
-    log_path = obter_log_mais_recente()
-    if not log_path or not log_path.exists():
-        return
-
-    morte_processada = False
-
-    while True:
-        try:
-            eventos = []
-            linhas_invalidas = 0
-            with open(log_path, encoding="utf-8") as f:
-                for l in f:
-                    l = l.strip()
-                    if not l:
-                        continue
-                    try:
-                        eventos.append(json.loads(l))
-                    except json.JSONDecodeError:
-                        linhas_invalidas += 1
-
-            if linhas_invalidas > 0:
-                log_text.insert(tk.END, f"[INFO] {linhas_invalidas} linhas de log ignoradas (JSON inválido)\n")
-
-
-            for evento in eventos:
-                tipo = evento.get("event")
-                ts = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
-
-                # Ignorar eventos antigos ou antes do undocked
-                if ultimo_undocked_ts and ts <= ultimo_undocked_ts:
-                    continue
-
-                # Abandono manual (EjectCargo)
-                if tipo == "EjectCargo":
-                    nome = evento.get("Type_Localised") or evento.get("Type")
-                    qtd = evento.get("Count", 0)
-                    mat_id = gerar_id(nome)
-                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|eject"
-
-                    if evento_id not in ultimos_abandonos:
-                        ultimos_abandonos.add(evento_id)
-                        abandono_para_firebase(nome, qtd)
-                
-                # Venda no mercado (MarketSell)
-                elif tipo == "MarketSell":
-                    nome = evento.get("Type_Localised") or evento.get("Type")
-                    qtd = evento.get("Count", 0)
-                    mat_id = gerar_id(nome)
-                    evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|marketsell"
-
-                    if evento_id not in ultimos_abandonos:
-                        ultimos_abandonos.add(evento_id)
-                        abandono_para_firebase(nome, qtd)
-                        log_text.insert(tk.END, f"💸 Venda detectada: {nome} x{qtd} (Revertido)\n")
-
-                # Transferência via porta-frotas
-                elif tipo == "CargoTransfer":
-                    for transf in evento.get("Transfers", []):
-                        direcao = transf.get("Direction")
-                        nome = transf.get("Type_Localised") or transf.get("Type")
-                        qtd = transf.get("Count", 0)
-                        mat_id = gerar_id(nome)
-                        evento_id = f"{mat_id}|{qtd}|{ts.isoformat()}|{direcao}"
-
-                        if evento_id in ultimos_abandonos:
-                            continue
-                        ultimos_abandonos.add(evento_id)
-
-                        if direcao == "tocarrier":
-                            abandono_para_firebase(nome, qtd)
-                        elif direcao == "toship":
-                            subtrair_do_firestore(nome, qtd)
-                            log_text.insert(tk.END, f"[💰] Transferência do porta-frotas detectada: {nome} x{qtd} (Comprado)\n")
-
-                # Morte
-                elif tipo == "Died" and not morte_processada:
-                    morte_processada = True
-                    for mat in materiais:
-                        abandono_para_firebase(mat["material"], mat["quantidade"])
-                    log_text.insert(tk.END, f"♻️ {len(materiais)} materiais devolvidos após morte/abandono\n")
-
-                # Fim do monitoramento
-                elif tipo == "Docked":
-                    return
-
-            # Limpeza de eventos antigos (5min)
-            ultimos_abandonos = {
-                eid for eid in ultimos_abandonos
-                if datetime.fromisoformat(eid.split("|")[2]) > datetime.utcnow() - timedelta(minutes=5)
-            }
-
-        except Exception as e:
-            log_text.insert(tk.END, f"[ERRO VERIFICAÇÃO] {str(e)}\n")
-            import traceback
-            traceback.print_exc()
-
-        time.sleep(1)
-
 def processar_carga():
-    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada, verificacao_thread, processar_carga_em_execucao
-    global ultima_morte_detectada, ultima_resurreicao_processada, verificacao_thread, ultimo_undocked_ts
+    global ultimo_cargo, ultimo_cargo_timestamp, ultima_entrega_realizada
+    global verificacao_thread, processar_carga_em_execucao
+    global ultima_morte_detectada, ultima_resurreicao_processada
+    global ultimo_undocked_ts, ultima_posicao_log
+
     if processar_carga_em_execucao:
         return
+
     processar_carga_em_execucao = True
 
     log_path = obter_log_mais_recente()
     if not log_path or not log_path.exists():
         log_text.insert(tk.END, "[ERRO] Log não encontrado.\n")
+        processar_carga_em_execucao = False
         return
 
-    log_text.insert(tk.END, "[🛰️] Monitorando log para eventos de compra e entrega...\n")
+    log_text.insert(tk.END, "[🛰️] Monitorando log para eventos de carga...\n")
+    log_text.see(tk.END)
 
     eventos_processados = set()
-    materiais_entregues = []
+
+    # Inventário REAL atual da nave
+    # Estrutura:
+    # {
+    #   "aluminio": {"material": "Alumínio", "quantidade": 40}
+    # }
+    inventario_atual = {}
+
+    # Começa lendo apenas eventos novos, para não reprocessar log antigo
+    try:
+        ultima_posicao_log = log_path.stat().st_size
+    except Exception:
+        ultima_posicao_log = 0
+
+    def adicionar_inventario(nome, qtd):
+        if not nome or qtd <= 0:
+            return
+
+        mat_id = gerar_id(nome)
+
+        if mat_id not in inventario_atual:
+            inventario_atual[mat_id] = {
+                "material": nome,
+                "quantidade": 0
+            }
+
+        inventario_atual[mat_id]["quantidade"] += qtd
+
+    def remover_inventario(nome, qtd):
+        if not nome or qtd <= 0:
+            return
+
+        mat_id = gerar_id(nome)
+
+        if mat_id not in inventario_atual:
+            return
+
+        inventario_atual[mat_id]["quantidade"] = max(
+            0,
+            inventario_atual[mat_id]["quantidade"] - qtd
+        )
+
+        if inventario_atual[mat_id]["quantidade"] <= 0:
+            del inventario_atual[mat_id]
+
+    def mostrar_inventario():
+        if not inventario_atual:
+            log_text.insert(tk.END, "\n[📦] Carga atual: vazia\n\n")
+            return
+
+        log_text.insert(tk.END, "\n==============================\n")
+        log_text.insert(tk.END, "        📦 CARGA ATUAL\n")
+        log_text.insert(tk.END, "==============================\n")
+
+        for item in inventario_atual.values():
+            log_text.insert(
+                tk.END,
+                f"• {item['material']:<25} x{item['quantidade']}\n"
+            )
+
+        log_text.insert(tk.END, "==============================\n\n")
+        log_text.see(tk.END)
 
     while True:
         try:
-            with open(log_path, encoding="utf-8") as f:
-                linhas = f.readlines()
+            log_atual = obter_log_mais_recente()
+
+            if not log_atual or not log_atual.exists():
+                time.sleep(1)
+                continue
+
+            # Se o jogo criou/trocou de arquivo Journal, muda para o novo
+            if log_atual != log_path:
+                log_path = log_atual
+                ultima_posicao_log = 0
+                eventos_processados.clear()
+                log_text.insert(tk.END, f"[INFO] Novo arquivo de log detectado: {log_path.name}\n")
 
             eventos = []
-            linhas_invalidas = 0
+
             with open(log_path, encoding="utf-8") as f:
-                for l in f:
-                    l = l.strip()
-                    if not l:
+                f.seek(ultima_posicao_log)
+
+                for linha in f:
+                    linha = linha.strip()
+                    if not linha:
                         continue
+
                     try:
-                        eventos.append(json.loads(l))
+                        eventos.append(json.loads(linha))
                     except json.JSONDecodeError:
-                        linhas_invalidas += 1
+                        log_text.insert(tk.END, "[INFO] Linha de log ignorada: JSON inválido\n")
 
-            eventos = sorted(eventos, key=lambda e: e["timestamp"])  # Ordenar por tempo
+                ultima_posicao_log = f.tell()
 
-            # ⚠️ Ignora eventos mais antigos que 60s para evitar leitura de logs antigos
-            agora = datetime.utcnow()
-            eventos = [e for e in eventos if (agora - datetime.strptime(e["timestamp"], "%Y-%m-%dT%H:%M:%SZ")).total_seconds() <= 60]
-
+            eventos = sorted(eventos, key=lambda e: e.get("timestamp", ""))
 
             for evento in eventos:
                 tipo = evento.get("event")
                 timestamp = evento.get("timestamp")
-                evento_id = f"{tipo}-{timestamp}"
 
-                # Ignora eventos já processados
+                if not tipo or not timestamp:
+                    continue
+
+                evento_id = json.dumps(evento, sort_keys=True, ensure_ascii=False)
+
                 if evento_id in eventos_processados:
                     continue
 
-                # 1. Evento de DOCKED → ponto de compra
+                # Atracou
                 if tipo == "Docked":
                     ultima_entrega_realizada = False
-                    log_text.insert(tk.END, "[INFO] Atracado. Aguardando compras...\n")
+                    log_text.insert(tk.END, "[INFO] Atracado. Aguardando eventos de carga...\n")
                     eventos_processados.add(evento_id)
 
-                # 2. MARKETBUY (Compras na estação)
+                # Compra na estação
                 elif tipo == "MarketBuy":
-                    if ultima_entrega_realizada:
-                        continue
                     nome = evento.get("Type_Localised") or evento.get("Type")
                     qtd = evento.get("Count", 0)
+
                     if nome and qtd:
-                        materiais_entregues.append({
-                            "id": gerar_id(nome),
-                            "material": nome,
-                            "quantidade": qtd
-                        })
+                        adicionar_inventario(nome, qtd)
+                        subtrair_do_firestore(nome, qtd)
+
                         log_text.insert(tk.END, f"[💰] Compra detectada: {nome} x{qtd}\n")
-                        subtrair_do_firestore(nome, qtd)  # 👈 subtrai diretamente após compra
-                        eventos_processados.add(evento_id)
+                        mostrar_inventario()
 
+                    eventos_processados.add(evento_id)
 
-                # 3. UNDОCKED → iniciar verificação de morte/abandono
+                # Venda na estação
+                elif tipo == "MarketSell":
+                    nome = evento.get("Type_Localised") or evento.get("Type")
+                    qtd = evento.get("Count", 0)
+
+                    if nome and qtd:
+                        abandono_para_firebase(nome, qtd)
+                        remover_inventario(nome, qtd)
+
+                        log_text.insert(tk.END, f"[💸] Venda detectada: {nome} x{qtd} (Revertido)\n")
+                        mostrar_inventario()
+
+                    eventos_processados.add(evento_id)
+
+                # Abandono/ejeção de carga
+                elif tipo == "EjectCargo":
+                    nome = evento.get("Type_Localised") or evento.get("Type")
+                    qtd = evento.get("Count", 0)
+
+                    if nome and qtd:
+                        abandono_para_firebase(nome, qtd)
+                        remover_inventario(nome, qtd)
+
+                        log_text.insert(tk.END, f"[⚠️] Carga abandonada: {nome} x{qtd} (Revertido)\n")
+                        mostrar_inventario()
+
+                    eventos_processados.add(evento_id)
+
+                # Transferência com porta-frotas
+                elif tipo == "CargoTransfer":
+                    for transf in evento.get("Transfers", []):
+                        direcao = transf.get("Direction")
+                        nome = transf.get("Type_Localised") or transf.get("Type")
+                        qtd = transf.get("Count", 0)
+
+                        if not nome or not qtd:
+                            continue
+
+                        if direcao == "tocarrier":
+                            abandono_para_firebase(nome, qtd)
+                            remover_inventario(nome, qtd)
+
+                            log_text.insert(
+                                tk.END,
+                                f"[🚚] Transferido para o porta-frotas: {nome} x{qtd} (Revertido)\n"
+                            )
+
+                        elif direcao == "toship":
+                            subtrair_do_firestore(nome, qtd)
+                            adicionar_inventario(nome, qtd)
+
+                            log_text.insert(
+                                tk.END,
+                                f"[💰] Transferido do porta-frotas para a nave: {nome} x{qtd}\n"
+                            )
+
+                    mostrar_inventario()
+                    eventos_processados.add(evento_id)
+
+                # Entrega real para estação de construção
+                elif tipo == "ColonisationContribution":
+                    contribuicoes = evento.get("Contributions", [])
+
+                    for item in contribuicoes:
+                        nome = item.get("Name_Localised") or item.get("Name")
+                        qtd = item.get("Amount", 0)
+
+                        if nome and qtd:
+                            remover_inventario(nome, qtd)
+                            log_text.insert(tk.END, f"[📦] Entregue à construção: {nome} x{qtd}\n")
+
+                    mostrar_inventario()
+                    eventos_processados.add(evento_id)
+
+                # Morte
+                elif tipo == "Died":
+                    if inventario_atual:
+                        for item in list(inventario_atual.values()):
+                            nome = item["material"]
+                            qtd = item["quantidade"]
+
+                            if qtd > 0:
+                                abandono_para_firebase(nome, qtd)
+                                log_text.insert(tk.END, f"↩ {nome}: +{qtd} (Morte)\n")
+
+                        inventario_atual.clear()
+                        log_text.insert(tk.END, "♻️ Carga atual devolvida após morte\n")
+                    else:
+                        log_text.insert(tk.END, "♻️ Morte detectada, mas inventário estava vazio\n")
+
+                    ultima_entrega_realizada = False
+                    eventos_processados.add(evento_id)
+
+                # Saiu da estação
                 elif tipo == "Undocked":
-                    ts_undocked = datetime.strptime(evento["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
-                    if not ultimo_undocked_ts or ts_undocked > ultimo_undocked_ts:
-                        ultimo_undocked_ts = ts_undocked
-                        log_text.insert(tk.END, "[🚀] Undocked detectado. Iniciando verificação de carga...\n")
-                        
-                        def iniciar_verificacao():
-                            global verificacao_em_andamento
-                            verificacao_em_andamento = True
-                            verificar_abandono_ou_morte(materiais_entregues.copy())
-                            verificacao_em_andamento = False
+                    try:
+                        ts_undocked = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
 
-                        # Interrompe o loop anterior se ainda estiver rodando (não temos cancelamento, então só permite um)
-                        if not verificacao_em_andamento:
-                            global verificacao_thread
-                            verificacao_thread = threading.Thread(target=iniciar_verificacao, daemon=True)
-                            verificacao_thread.start()
-                            ultima_entrega_realizada = True
-                            materiais_entregues.clear()
-                            eventos_processados.add(evento_id)
+                        if not ultimo_undocked_ts or ts_undocked > ultimo_undocked_ts:
+                            ultimo_undocked_ts = ts_undocked
+                            log_text.insert(tk.END, "[🚀] Undocked detectado.\n")
+
+                    except ValueError:
+                        log_text.insert(tk.END, "[ERRO] Timestamp inválido em Undocked\n")
+
+                    eventos_processados.add(evento_id)
+
+                log_text.see(tk.END)
+
+            # Evita crescimento infinito do set
+            if len(eventos_processados) > 2000:
+                eventos_processados.clear()
+
+        except FileNotFoundError:
+            log_text.insert(tk.END, "[ERRO] Arquivo de log não encontrado durante leitura.\n")
+
+        except KeyError as e:
+            log_text.insert(tk.END, f"[ERRO] Campo ausente no evento: {str(e)}\n")
+
+        except ValueError as e:
+            log_text.insert(tk.END, f"[ERRO] Problema ao converter dados: {str(e)}\n")
+
         except Exception as e:
-            log_text.insert(tk.END, f"[ERRO] {str(e)}\n")
+            log_text.insert(tk.END, f"[ERRO DESCONHECIDO] {str(e)}\n")
             import traceback
             traceback.print_exc()
-        time.sleep(1)
 
-    processar_carga_em_execucao = False
+        time.sleep(1)
 
 def abandono_para_firebase(nome, qtd):
     construcao_nome = construcoes_var.get()
@@ -409,7 +485,7 @@ def abandono_para_firebase(nome, qtd):
     for mat in materiais:
         if gerar_id(mat["material"]) == gerar_id(nome):
             mat["restante"] += qtd
-            log_text.insert(tk.END, f"↩ {mat['material']}: +{qtd} (Abandono)\n")
+            # log_text.insert(tk.END, f"↩ {mat['material']}: +{qtd} (Abandono)\n")
             break
 
     doc_ref.update({"items": materiais})
@@ -448,13 +524,18 @@ def loop_verificacao():
             time.sleep(5)
             continue
 
-        threading.Thread(target=processar_carga, daemon=True).start()
+        global processar_carga_thread
+
+        if processar_carga_thread is None or not processar_carga_thread.is_alive():
+            processar_carga_thread = threading.Thread(target=processar_carga, daemon=True)
+            processar_carga_thread.start()
         nome_estacao, tipo_estacao, materiais = processar_log(log_path)
 
         if nome_estacao:
             if nome_estacao != ultima_estacao:
                 ultima_estacao = nome_estacao
                 ultimo_estado_materiais = {}  # Zera o estado quando troca de estação
+                global leitura_carga_permitida
                 leitura_carga_permitida = False
 
                 with open(ultimo_dock_log, "w", encoding="utf-8") as f:
@@ -484,8 +565,6 @@ def normalizar_nome(nome):
     for k, v in substituicoes.items():
         nome = nome.replace(k, v)
     return nome.rstrip('s').strip('_')
-
-from datetime import datetime, timedelta
 
 ultima_morte_detectada = None
 ultima_resurreicao_processada = None
