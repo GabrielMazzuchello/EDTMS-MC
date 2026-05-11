@@ -29,7 +29,7 @@ ultimo_undocked_ts = None
 processar_carga_em_execucao = False
 processar_carga_thread = None
 
-# 
+# python -m PyInstaller --clean --noconfirm --onefile --windowed --add-data "serviceAccountKey.json;." --add-data "edtms_logo.png;." --icon=EDTMS.ico EDTMS.py
 
 # Caminho padrão do log
 LOG_DIR = Path(os.environ["USERPROFILE"]) / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
@@ -706,8 +706,7 @@ def get_resource_path(relative_path):
 
 # Interface Gráfica Tkinter - Design Atualizado
 janela = tk.Tk()
-janela.iconbitmap(get_resource_path("EDTMS.ico"))
-janela.title("EDTMS")
+janela.title("EDTMS-CS")
 janela.geometry("620x620")
 janela.minsize(560, 500)
 janela.resizable(True, True)
@@ -827,18 +826,6 @@ try:
 except Exception as e:
     print(f"Erro ao carregar logo: {str(e)}")
 
-# cor da barra lateral no windows 11
-import ctypes
-HWND = ctypes.windll.user32.GetParent(janela.winfo_id())
-DWMWA_BORDER_COLOR = 34
-
-ctypes.windll.dwmapi.DwmSetWindowAttribute(
-    HWND,
-    DWMWA_BORDER_COLOR,
-    ctypes.byref(ctypes.c_int(0x00222222)),
-    ctypes.sizeof(ctypes.c_int)
-)
-
 # Área de Log
 log_frame = tk.Frame(frame_principal, bg=COR_DE_FUNDO)
 log_frame.pack(fill="both", expand=True)
@@ -871,7 +858,7 @@ log_text.vbar.config(
 # Barra de Status
 status_bar = tk.Label(
     janela,
-    text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.1",
+    text="🟢 PRONTO PARA SINCRONIZAR | EDTMS v1.5",
     bg=COR_DESTAQUE,
     fg="#1a1a1a",
     font=("Consolas", 10, "bold"),
@@ -901,12 +888,6 @@ header_frame.bind("<B1-Motion>", do_drag)
 aplicar_arraste(frame_principal)
 aplicar_arraste(header_frame)
 aplicar_arraste(cabecalho)
-
-try:
-    aplicar_arraste(logo_frame)
-    aplicar_arraste(logo_label)
-except:
-    pass
 
 # Mensagem Inicial
 log_text.tag_config("success", foreground="#00ff00")
